@@ -1,0 +1,57 @@
+# Netlify sozlamasi (repo ildizida).
+# Netlify -> Site settings -> Environment variables ga 2 ta o'zgaruvchi qo'shing:
+#   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+[build]
+  base    = "frontend"
+  command = "npm ci && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Vite fayllari nomida hash bor - uzoq muddat keshlash xavfsiz
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Service worker va manifest har safar yangidan tekshiriladi (yangi versiya telefonga tez yetsin)
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Service-Worker-Allowed = "/"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Content-Type = "application/manifest+json"
+
+# Ixtiyoriy Android ilova fayli (frontend/public/tiniq.apk) — yuklab olinadigan fayl sifatida beriladi
+[[headers]]
+  for = "/tiniq.apk"
+  [headers.values]
+    Content-Type = "application/vnd.android.package-archive"
+    Content-Disposition = "attachment; filename=\"tiniq.apk\""
+    Cache-Control = "no-cache"
+
+# PWABuilder/Bubblewrap bergan assetlinks.json shu yerga qo'yiladi (frontend/public/.well-known/assetlinks.json)
+[[headers]]
+  for = "/.well-known/assetlinks.json"
+  [headers.values]
+    Content-Type = "application/json"
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+# React Router (SPA): barcha yo'llar index.html ga yo'naltiriladi
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
