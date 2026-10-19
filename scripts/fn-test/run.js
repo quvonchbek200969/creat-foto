@@ -281,6 +281,14 @@ const img = btoa('x'.repeat(2000))
   await enh({ aspect: 'evil; 1:1' })
   ok(gemCalls.slice(n0).every((c) => !c.generationConfig.imageConfig), 'Gemini: kadr nisbati yo\'q yoki noto\'g\'ri bo\'lsa imageConfig yuborilmaydi')
 
+  // Chiqish o'lchami: 4K so'ralsa 4K, noto'g'ri qiymat 2K ga tushadi
+  n0 = gemCalls.length
+  await enh({ aspect: '3:2', size: '4K' })
+  ok(gemCalls[n0].generationConfig.imageConfig.imageSize === '4K', 'Gemini: size=4K bo\'lsa imageSize 4K yuboriladi')
+  n0 = gemCalls.length
+  await enh({ aspect: '3:2', size: '8K; drop' })
+  ok(gemCalls[n0].generationConfig.imageConfig.imageSize === '2K', 'Gemini: noto\'g\'ri size 2K ga tushadi')
+
   // Kalitda model qo'lda ko'rsatilgan: faqat o'sha ishlatiladi (zaxiraga o'tilmaydi)
   await dropKey('zaxira-sinov')
   await add({ key: KEYS.fb, label: 'qolda-model', model: 'gemini-nano-banana-2.1' })

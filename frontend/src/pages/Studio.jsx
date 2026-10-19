@@ -10,6 +10,38 @@ import { DEFAULTS, effectiveScale } from '../lib/pixels.js'
 import { OPEN_PRESET, PRESETS, SLIDERS, aiAfterParams, isDefault, presetParams } from '../lib/presets.js'
 
 const PREVIEW_MAX = 1400
+
+// Natija o'lchami: uzun tomon (piksel). 0 — asl o'lcham (yoki qo'lda tanlangan 1×–4×).
+const TARGETS = [
+  { px: 0, label: 'Asl' },
+  { px: 2048, label: '2K' },
+  { px: 3072, label: '3K' },
+  { px: 4096, label: '4K' },
+]
+
+// Maqsadli o'lchamga mos kattalashtirish koeffitsiyenti (kasr bo'lishi mumkin; 1 dan kichik bo'lsa kattalashtirilmaydi)
+function wantedScale(base, p, target) {
+  return target ? Math.max(1, target / Math.max(base.width, base.height)) : p.scale
+}
+
+function SizePicker({ target, onChange, outW, outH, capped }) {
+  return (
+    <div className="mb-3">
+      <p className="label">Natija o‘lchami</p>
+      <div className="grid grid-cols-4 gap-2">
+        {TARGETS.map((t) => (
+          <button key={t.px} className={`btn btn-sm ${target === t.px ? '!border-[var(--cyan)] !bg-[rgba(34,211,238,.1)]' : ''}`} aria-pressed={target === t.px} onClick={() => onChange(t.px)}>{t.label}</button>
+        ))}
+      </div>
+      <p className="faint mt-1.5 text-xs">
+        Natija: <b className="text-white">{outW}×{outH}</b> px
+        {capped && <span className="text-[var(--amber)]"> · xotira uchun cheklandi</span>}
+        {target >= 3072 && <span> · Gemini 4K so‘raydi (~11 sent, 40–90 soniya)</span>}
+      </p>
+    </div>
+  )
+}
+
 const TABS = [
   { id: 'presets', label: 'Tezkor' },
   { id: 'adjust', label: 'Sozlash' },
@@ -30,6 +62,7 @@ export default function Studio() {
   const [ai, setAi] = useState(null) // { bitmap, provider, mode }
   const [useAi, setUseAi] = useState(true)
   const [params, setParams] = useState(() => presetParams(OPEN_PRESET))
+  const [target, setTarget] = useState(0) // natija o'lchami (uzun tomon, px); presetlar uni o'zgartirmaydi
   const [tab, setTab] = useState('presets')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -45,6 +78,7 @@ export default function Studio() {
   const afterRef = useRef(null)
   const previewRef = useRef(null)
   const paramsRef = useRef(params)
+  const targetRef = useRef(0)
   const baseRef = useRef(null)
   const job = useRef({ running: false, again: false })
   const fileInput = useRef(null)
@@ -65,9 +99,9 @@ export default function Studio() {
           const b = baseRef.current
           if (!prev || !b) break
           const p = paramsRef.current
-          const s = effectiveScale(b.width, b.height, p.scale, LIMITS.maxOut)
+          const s = effectiveScale(b.width, b.height, wantedScale(b, p, targetRef.current), LIMITS.maxOut)
           const k = Math.min(1, Math.max(prev.width, prev.height) / (Math.max(b.width, b.height) * s))
-          const out = await runProcess(prev, { ...p, scale: 1 }, k)
+          const out = await runProcess(prev, { ...p, scale: 1, fullScale: s }, k)
           if (afterRef.current && previewRef.current === prev) paintImageData(afterRef.current, out)
         } while (j.again)
       } catch (e) {
@@ -81,8 +115,9 @@ export default function Studio() {
 
   useEffect(() => {
     paramsRef.current = params
+    targetRef.current = target
     if (previewRef.current) renderPreview()
-  }, [params, renderPreview])
+  }, [params, target, renderPreview])
 
   useEffect(() => {
     baseRef.current = base
@@ -135,7 +170,8 @@ export default function Studio() {
     setExporting(true)
     setErr('')
     try {
-      const out = await runProcess(bitmapToImageData(base, 0), paramsRef.current, 1)
+      const p = paramsRef.current
+      const out = await runProcess(bitmapToImageData(base, 0), { ...p, scale: wantedScale(base, p, targetRef.current) }, 1)
       const blob = await imageToBlob(out, fmt, quality / 100)
       const name = `${(src.name || 'rasm').replace(/\.[^.]+$/, '')}-tiniq.${FORMATS[fmt].ext}`
       downloadBlob(blob, name)
@@ -213,7 +249,9 @@ export default function Studio() {
   }
 
   /* ───────── 2) Muharrir ───────── */
-  const s = effectiveScale(base.width, base.height, params.scale, LIMITS.maxOut)
+  const wanted = wantedScale(base, params, target)
+  const s = effectiveScale(base.width, base.height, wanted, LIMITS.maxOut)
+  const capped = s < Math.floor(wanted * 1000) / 1000 && wanted > 1
   const outW = Math.round(base.width * s)
   const outH = Math.round(base.height * s)
   const aspectDiff = Math.abs(base.width / base.height - src.bitmap.width / src.bitmap.height) / (src.bitmap.width / src.bitmap.height)
@@ -230,7 +268,7 @@ export default function Studio() {
             </p>
           </div>
           <button className="btn btn-sm" onClick={() => fileInput.current?.click()}>Yangi rasm</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { setParams(DEFAULTS); setAi(null) }} disabled={isDefault(params) && !ai}>Asliga qaytarish</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setParams(DEFAULTS); setAi(null); setTarget(0) }} disabled={isDefault(params) && !ai && !target}>Asliga qaytarish</button>
           <input ref={fileInput} type="file" accept={ACCEPT} className="hidden" onChange={(e) => { openFile(e.target.files?.[0]); e.target.value = '' }} />
         </div>
 
@@ -287,11 +325,14 @@ export default function Studio() {
           ))}
         </div>
 
+        {tab === 'presets' && <SizePicker target={target} onChange={setTarget} outW={outW} outH={outH} capped={capped} />}
+
         {tab === 'presets' && (
           <AiPanel
             compact
             src={src}
             ai={ai}
+            target={target}
             useAi={useAi}
             onUseAi={setUseAi}
             onResult={onAiResult}
@@ -319,19 +360,14 @@ export default function Studio() {
 
         {tab === 'adjust' && (
           <div className="space-y-4">
+            <SizePicker target={target} onChange={setTarget} outW={outW} outH={outH} capped={capped} />
             <div>
-              <p className="label">Kattalashtirish</p>
+              <p className="label">Yoki necha barobar kattalashtirish</p>
               <div className="grid grid-cols-4 gap-2">
                 {[1, 2, 3, 4].map((n) => (
-                  <button key={n} className={`btn btn-sm ${params.scale === n ? '!border-[var(--cyan)] !bg-[rgba(34,211,238,.1)]' : ''}`} aria-pressed={params.scale === n} onClick={() => set('scale')(n)}>{n}×</button>
+                  <button key={n} className={`btn btn-sm ${!target && params.scale === n ? '!border-[var(--cyan)] !bg-[rgba(34,211,238,.1)]' : ''}`} aria-pressed={!target && params.scale === n} onClick={() => { setTarget(0); set('scale')(n) }}>{n}×</button>
                 ))}
               </div>
-              {params.scale > 1 && (
-                <p className="faint mt-1.5 text-xs">
-                  Natija: <b className="text-white">{outW}×{outH}</b> px
-                  {s < params.scale && <span className="text-[var(--amber)]"> · xotira uchun {s}× bilan cheklandi</span>}
-                </p>
-              )}
             </div>
             {SLIDERS.map((g) => (
               <div key={g.group}>
@@ -349,6 +385,7 @@ export default function Studio() {
           <AiPanel
             src={src}
             ai={ai}
+            target={target}
             useAi={useAi}
             onUseAi={setUseAi}
             onResult={onAiResult}

@@ -38,7 +38,8 @@ Jami ~20 daqiqa. Tartib muhim: **avval Supabase, keyin Netlify**.
 3. **Site configuration → Environment variables** ga 2 ta qiymat qo'shing:
    - `VITE_SUPABASE_URL` = Project URL
    - `VITE_SUPABASE_ANON_KEY` = anon public kalit
-4. **Deploy site**. Tayyor bo'lgach manzilni (`https://....netlify.app`) Supabase'dagi **Authentication → URL Configuration → Site URL** ga yozing.
+4. **Deploy site**. Tayyor bo'lgach manzilni (`https://....netlify.app`) Supabase'dagi **Authentication → URL Configuration → Site URL** ga yozing (**Redirect URLs** ga ham qo'shing).
+5. **Saytni hamma uchun ochiq qiling.** Boshqa telefon/kompyuterdan sayt Netlify login oynasiga o'tib ketsa (brauzerda ochilmasa, tashqaridan `401`), saytga Netlify himoyasi yoqilgan: **Site configuration → Access & security → Visitor access** (yoki Team settings → Security) bo'limida login/parol himoyasini o'chiring — sayt «Anyone with the link» (hamma ochiq) bo'lishi kerak. Sinash: saytni Netlify'ga kirmagan brauzerda (Incognito) oching.
 
 ---
 

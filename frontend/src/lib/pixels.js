@@ -7,6 +7,7 @@ export const DEFAULTS = {
   scale: 1, // kattalashtirish: 1, 2, 3, 4
   denoise: 0, // shovqinni kamaytirish 0..100
   auto: 0, // avto-tuzatish (yorug'lik va kontrast) 0..100
+  deblur: 0, // xiralikni tiklash (dekonvolyutsiya) 0..100 — xira/fokussiz rasm uchun eng kuchli mahalliy usul
   sharpen: 0, // aniqlik 0..100
   radius: 1.2, // aniqlik radiusi (piksel)
   clarity: 0, // tiniqlik (lokal kontrast) 0..100
@@ -20,11 +21,12 @@ export const DEFAULTS = {
 // Chiqish rasmi shu pikselga yetganda kattalashtirish avtomatik kamaytiriladi (xotira himoyasi)
 export const MAX_OUT_PIXELS = 36_000_000
 
+// scale kasr bo'lishi mumkin (masalan, 4K maqsadi uchun 3.41×); 1 dan kichik qiymat — kattalashtirmaslik
 export function effectiveScale(w, h, scale, maxOut = MAX_OUT_PIXELS) {
-  const s = Math.max(1, scale | 0)
+  const s = Math.max(1, Math.floor((Number(scale) || 1) * 1000) / 1000)
   if (s === 1) return 1
   const cap = Math.sqrt(maxOut / (w * h))
-  return Math.max(1, Math.min(s, Math.floor(cap * 100) / 100))
+  return Math.max(1, Math.min(s, Math.floor(cap * 1000) / 1000))
 }
 
 /* ───────── Yordamchi: yorug'lik va Gauss xiralashtirish ───────── */
@@ -222,6 +224,93 @@ export function sharpen(d, w, h, amount, radius, threshold = 0) {
   }
 }
 
+/* ───────── Xiralikni tiklash: Richardson–Lucy dekonvolyutsiyasi ─────────
+   Unsharp mask faqat chegara kontrastini oshiradi; dekonvolyutsiya esa xiralashtirish jarayonini (Gauss yadrosi)
+   teskari yo'nalishda taxmin qilib, yo'qolgan detalni haqiqatan qaytaradi. Faqat yorug'likda ishlaydi;
+   shovqin kuchayib ketmasligi uchun yumshoq eshik (gate) va cheklov ishlatiladi. */
+
+function gaussKernel(sigma) {
+  const r = Math.max(1, Math.ceil(sigma * 2.5))
+  const k = new Float32Array(2 * r + 1)
+  let sum = 0
+  for (let i = -r; i <= r; i++) { const v = Math.exp(-(i * i) / (2 * sigma * sigma)); k[i + r] = v; sum += v }
+  for (let i = 0; i < k.length; i++) k[i] /= sum
+  return { k, r }
+}
+
+// Yadro simmetrik: har bir juft (chap/o'ng) bitta ko'paytirish bilan hisoblanadi — ~1.5× tezroq
+function convH(src, dst, w, h, { k, r }) {
+  const c = k[r]
+  const lo = Math.min(r, w), hi = Math.max(r, w - r)
+  for (let y = 0; y < h; y++) {
+    const o = y * w
+    for (let x = lo; x < hi; x++) {
+      const p = o + x
+      let s = src[p] * c
+      for (let i = 1; i <= r; i++) s += k[r + i] * (src[p - i] + src[p + i])
+      dst[p] = s
+    }
+    for (let x = 0; x < w; x++) {
+      if (x >= lo && x < hi) continue // chekka piksellar: koordinata rasm ichiga qisiladi
+      let s = src[o + x] * c
+      for (let i = 1; i <= r; i++) s += k[r + i] * (src[o + Math.max(0, x - i)] + src[o + Math.min(w - 1, x + i)])
+      dst[o + x] = s
+    }
+  }
+}
+
+// Vertikal: qator bo'yicha jamlanadi (xotiradan ketma-ket o'qish — keshga qulay)
+function convV(src, dst, w, h, { k, r }) {
+  const c = k[r]
+  for (let y = 0; y < h; y++) {
+    const o = y * w
+    for (let x = 0; x < w; x++) dst[o + x] = src[o + x] * c
+    for (let i = 1; i <= r; i++) {
+      const a = Math.max(0, y - i) * w, b = Math.min(h - 1, y + i) * w, ki = k[r + i]
+      for (let x = 0; x < w; x++) dst[o + x] += ki * (src[a + x] + src[b + x])
+    }
+  }
+}
+
+// Gauss yadrosi bilan joyida xiralashtirish (aniq yadro: kichik sigma'da quti filtridan aniqroq). tmp — ishchi massiv.
+function blurInPlace(a, tmp, w, h, kern) {
+  convH(a, tmp, w, h, kern)
+  convV(tmp, a, w, h, kern)
+}
+
+export function deblur(d, w, h, amount, sigma, gate = 0) {
+  if (amount <= 0) return
+  const n = w * h
+  const L = lumaOf(d, n)
+  const kern = gaussKernel(Math.max(0.5, sigma))
+  let iters = Math.round(4 + (amount / 100) * 12) // 4..16 (RL sekin yaqinlashadi; kvadrat tuzatish bilan ~2× tez)
+  if (n > 6_000_000) iters = Math.max(5, Math.round(iters * Math.sqrt(6_000_000 / n))) // juda katta rasmda vaqt chegaralanadi
+  const est = new Float32Array(L)
+  const a = new Float32Array(n)
+  const tmp = new Float32Array(n)
+  for (let it = 0; it < iters; it++) {
+    a.set(est)
+    blurInPlace(a, tmp, w, h, kern) // a = baho ⊗ yadro
+    for (let i = 0; i < n; i++) a[i] = (L[i] + 1) / (a[i] + 1) // kuzatilgan / modellashtirilgan
+    blurInPlace(a, tmp, w, h, kern)
+    // tuzatish nisbatining kvadrati (over-relaxation): bir xil iteratsiyada aniqroq natija, o'lchovlarda oddiy RL'ning 2× iteratsiyasidan yaxshi
+    for (let i = 0; i < n; i++) { const v = est[i] * a[i] * a[i]; est[i] = v > 255 ? 255 : v }
+  }
+  const mix = Math.min(1, amount / 100)
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    let delta = (est[i] - L[i]) * mix
+    if (gate > 0) { const t = Math.abs(delta) / gate; if (t < 1) delta *= t * t }
+    if (delta > 60) delta = 60
+    else if (delta < -60) delta = -60 // halo (yorug' hoshiya)ni cheklash
+    d[j] += delta; d[j + 1] += delta; d[j + 2] += delta
+  }
+}
+
+// Xiralik yadrosi kengligi rasm o'lchamiga qarab taxmin qilinadi (to'liq o'lchamdagi piksel hisobida)
+export function deblurSigma(longSide) {
+  return Math.min(3, Math.max(0.8, 0.7 + 0.5 * (longSide / 1600)))
+}
+
 /* ───────── Rang sozlamalari ───────── */
 
 export function adjust(d, n, p) {
@@ -326,18 +415,26 @@ export function processImage(img, p, k = 1) {
   denoise(data, w, h, q.denoise)
   autoLevels(data, w, h, q.auto)
   const s = effectiveScale(w, h, q.scale, q.maxOut)
+  // Xiralikni tiklash kattalashtirishdan OLDIN, asl o'lchamda: xiralik kamerada asl piksellarda yuz bergan (yadro ~1 px),
+  // va ~s² marta kam piksel ishlanadi. Ko'rib chiqishda (scale=1) haqiqiy kattalashtirish fullScale orqali keladi.
+  // kSrc — hozirgi rasm / asl rasm o'lchami nisbati.
+  if (q.deblur > 0) {
+    const kSrc = (k * (q.fullScale || s)) / s
+    deblur(data, w, h, q.deblur, deblurSigma(Math.max(w, h) / kSrc) * kSrc, estimateNoise(data, w, h) * 2.5)
+  }
   if (s > 1) {
     const nw = Math.round(w * s), nh = Math.round(h * s)
     data = resize(data, w, h, nw, nh)
     w = nw; h = nh
   }
-  clarity(data, w, h, q.clarity)
-  // Aniqlik radiusi rasm o'lchamiga moslanadi: 12 MP suratda 1.2 px deyarli sezilmaydi, chunki xiralik ham shuncha piksel keng.
+  // Aniqlik radiusi va xiralik yadrosi rasm o'lchamiga moslanadi: 12 MP suratda 1.2 px deyarli sezilmaydi, chunki xiralik ham shuncha piksel keng.
   // Ko'rib chiqishda (k < 1) rasm kichraytirilgan, shuning uchun o'lcham to'liq nusxaga qayta hisoblanadi — natija bir xil bo'ladi.
-  const r = Math.max(0.4, q.radius * k * sharpenBoost(Math.max(w, h) / k))
+  const fullSide = Math.max(w, h) / k
   // Kuchli aniqlik donadorlikni ham kuchaytirib yubormasligi uchun: rasmdagi shovqin darajasidan kuchsiz farqlar o'tkazilmaydi
   // (Katta radiusda shovqin deyarli to'liq "farq" bo'lib qoladi, shuning uchun u yerda eshik balandroq.)
   const noise = q.sharpen > 0 ? estimateNoise(data, w, h) : 0
+  clarity(data, w, h, q.clarity)
+  const r = Math.max(0.4, q.radius * k * sharpenBoost(fullSide))
   sharpen(data, w, h, q.sharpen, r, noise * 2.5)
   sharpen(data, w, h, q.sharpen * 0.45, r * 3, noise * 3) // o'rta masshtab: mayda chegaralar bilan birga teksturani ham jonlantiradi
   adjust(data, w * h, q)

@@ -1,7 +1,7 @@
 // Tiniq: piksel algoritmlarini Node'da tekshirish.  Ishga tushirish:  node scripts/test-pixels.mjs
 import {
   DEFAULTS, denoise, estimateNoise, autoLevels, sharpen, clarity, adjust, resize, processImage, effectiveScale, MAX_OUT_PIXELS,
-  sharpenBoost, nearestAspect,
+  sharpenBoost, nearestAspect, deblur, deblurSigma, gaussBlur,
 } from '../frontend/src/lib/pixels.js'
 import { PRESETS, aiAfterParams, presetParams } from '../frontend/src/lib/presets.js'
 
@@ -224,12 +224,79 @@ const maxStep = (p) => { let m = 0; for (let x = 1; x < p.length; x++) m = Math.
   ok(maxStep(columnProfile(gated.data, W, H)) > step0 * 1.3, 'va chegara baribir keskinlashadi', `${(maxStep(columnProfile(gated.data, W, H)) / step0).toFixed(2)}×`)
 }
 
+// 10c) Xiralikni tiklash (dekonvolyutsiya): ma'lum xiralikni teskari qaytarib, asl keskin rasmga yaqinlashishi kerak
+{
+  const dw = 320, dh = 240, dn = dw * dh
+  const sharpL = new Float32Array(dn).fill(120)
+  const rect = (x0, y0, x1, y1, v) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) sharpL[y * dw + x] = v }
+  rect(20, 20, 140, 100, 200); rect(160, 30, 300, 90, 60); rect(40, 130, 200, 220, 30); rect(220, 120, 300, 220, 230)
+  for (let i = 0; i < 12; i++) rect(60 + i * 6, 140, 62 + i * 6, 210, 220) // ingichka chiziqlar
+  const toRGBA = (L) => { const d = new Uint8ClampedArray(dn * 4); for (let i = 0; i < dn; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = L[i]; d[i * 4 + 3] = 255 } return d }
+  const rmse = (d) => { let s = 0; for (let i = 0; i < dn; i++) s += (d[i * 4] - sharpL[i]) ** 2; return Math.sqrt(s / dn) }
+  const blurred = toRGBA(gaussBlur(sharpL, dw, dh, 1.5))
+  const e0 = rmse(blurred)
+  const fixed = new Uint8ClampedArray(blurred)
+  deblur(fixed, dw, dh, 100, 1.5)
+  const e1 = rmse(fixed)
+  const usm = new Uint8ClampedArray(blurred)
+  sharpen(usm, dw, dh, 100, 1.5)
+  ok(e1 < e0 * 0.7, 'deblur xira rasmni asl keskin rasmga sezilarli yaqinlashtiradi', `xatolik (RMSE) ${e0.toFixed(1)} → ${e1.toFixed(1)}`)
+  ok(e1 < rmse(usm), 'deblur oddiy aniqlikdan (unsharp) ko\'ra asl rasmga yaqinroq', `deblur ${e1.toFixed(1)}, unsharp ${rmse(usm).toFixed(1)}`)
+
+  const flat = new Uint8ClampedArray(dn * 4).fill(130)
+  const f0 = new Uint8ClampedArray(flat)
+  deblur(flat, dw, dh, 100, 2)
+  ok(flat.every((v, i) => v === f0[i]), 'deblur tekis rangni o\'zgartirmaydi')
+
+  // Shovqinli tekis maydonda: eshik bilan shovqin portlab ketmasligi kerak
+  const noisyL = new Float32Array(dn); for (let i = 0; i < dn; i++) noisyL[i] = 128 + gauss() * 6
+  const nd = toRGBA(noisyL)
+  const v0 = variance(nd, dw, 10, 150, 10, 110)
+  deblur(nd, dw, dh, 100, 1.5, estimateNoise(toRGBA(noisyL), dw, dh) * 2.5)
+  const v1 = variance(nd, dw, 10, 150, 10, 110)
+  ok(v1 < v0 * 3, 'deblur shovqinli tekis maydonda shovqinni portlatmaydi (eshik)', `dispersiya ${v0.toFixed(0)} → ${v1.toFixed(0)}`)
+
+  ok(deblurSigma(800) < deblurSigma(1600) && deblurSigma(1600) < deblurSigma(4096) && deblurSigma(20000) === 3, 'deblurSigma rasm o\'lchami bilan o\'sadi, 3 px dan oshmaydi')
+}
+
+// 10c2) Dekonvolyutsiya ko'rib chiqishda (kichraytirilgan) ham to'liq o'lchamdagiday kuchda bo'lishi kerak;
+//       kattalashtirish bilan birga ishlatilganda ham (asl o'lchamda dekonvolyutsiya, so'ng kattalashtirish)
+{
+  const Wb = 1600, Hb = 24
+  const mk = (w = Wb) => makeImage(w, Hb, { soft: 1.4 })
+  const step0 = maxStep(columnProfile(mk().data, Wb, Hb))
+  const gainOf = (img, base) => maxStep(columnProfile(img.data, img.width, Hb)) / base
+  // 2× kattalashtirilgan to'liq natija
+  const full = processImage(mk(), { scale: 2, deblur: 80 })
+  const refStep = maxStep(columnProfile(resize(mk().data, Wb, Hb, Wb * 2, Hb * 2), Wb * 2, Hb))
+  const gFull = gainOf(full, refStep)
+  const gPlain = gainOf(processImage(mk(), { scale: 2 }), refStep) // faqat kattalashtirish (deblursiz)
+  // Ko'rib chiqish: asl rasm 2× kichraytirilgan (800 px), scale=1, haqiqiy kattalashtirish fullScale=2, k = 800/(1600*2)
+  const half = { data: resize(mk().data, Wb, Hb, Wb / 2, Hb), width: Wb / 2, height: Hb }
+  const stepHalf = maxStep(columnProfile(half.data, half.width, Hb))
+  const prev = processImage(half, { scale: 1, fullScale: 2, deblur: 80 }, (Wb / 2) / (Wb * 2))
+  const gPrev = gainOf(prev, stepHalf)
+  ok(gFull > gPlain * 1.05, 'kattalashtirish bilan birga deblur chegarani oddiy kattalashtirishdan keskinroq qiladi', `${gPlain.toFixed(2)}× → ${gFull.toFixed(2)}×`)
+  ok(Math.abs(gPrev - gFull) / gFull < 0.35, 'deblur: ko\'rib chiqish va to\'liq natija kuchi mos', `${gPrev.toFixed(2)}× va ${gFull.toFixed(2)}×`)
+  void step0
+}
+
+// 10d) Kasr kattalashtirish (2K/3K/4K maqsadi uchun): 1200 px → 4096 px
+{
+  ok(effectiveScale(1200, 800, 3.41) === 3.41, 'effectiveScale kasr qiymatni saqlaydi (3.41×)')
+  ok(effectiveScale(100, 100, 1) === 1 && effectiveScale(100, 100, 0.5) === 1 && effectiveScale(100, 100, 'x') === 1, 'effectiveScale 1 dan kichik/noto\'g\'ri qiymatda kattalashtirmaydi')
+  const img = makeImage(100, 60, { soft: 2 })
+  const out = processImage({ data: new Uint8ClampedArray(img.data), width: 100, height: 60 }, { scale: 3.41, sharpen: 60, deblur: 40 })
+  ok(out.width === Math.round(100 * 3.41) && out.height === Math.round(60 * 3.41) && !out.data.some(Number.isNaN), 'processImage kasr kattalashtirishda o\'lcham to\'g\'ri', `${out.width}x${out.height}`)
+}
+
 // 11) Kadr nisbati (Gemini'ga yuboriladi) va tayyor sozlamalar
 {
   const cases = [[4000, 3000, '4:3'], [1000, 1000, '1:1'], [1080, 1920, '9:16'], [3000, 2000, '3:2'], [1234, 1000, '5:4'], [800, 1200, '2:3']]
   ok(cases.every(([w, h, a]) => nearestAspect(w, h) === a), 'nearestAspect eng yaqin kadr nisbatini tanlaydi', cases.map(([w, h]) => nearestAspect(w, h)).join(' '))
   ok(PRESETS.every((p) => p.params.sharpen >= 45), 'hamma tayyor sozlamada aniqlik sezilarli (>= 45)')
-  ok(presetParams('auto').sharpen >= 80, '"Avto yaxshilash" kuchli aniqlik beradi')
+  ok(presetParams('auto').sharpen >= 70 && presetParams('auto').deblur >= 50, '"Avto yaxshilash" kuchli aniqlik va xiralikni tuzatishni beradi')
+  ok(presetParams('sharp').deblur === 100, '"Kuchli tiniqlik" to\'liq dekonvolyutsiya beradi')
   const a = aiAfterParams(2)
   ok(a.scale === 2 && a.denoise === 0 && a.auto === 0 && a.sharpen > 0, 'AI dan keyingi sozlama: faqat yengil aniqlik, shovqin/avto-tuzatish yo\'q')
 }

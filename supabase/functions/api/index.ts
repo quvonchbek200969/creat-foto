@@ -50,7 +50,9 @@ const DEFAULT_MODEL: Record<string, string> = {
   stability: "fast",
 };
 // Provayder qabul qiladigan eng katta tomon (piksel). Klient rasmni shunga kichraytirib yuboradi.
-const MAX_SIDE: Record<string, number> = { gemini: 2048, openai: 2048, replicate: 1200, stability: 1000 };
+const MAX_SIDE: Record<string, number> = { gemini: 3072, openai: 2048, replicate: 1200, stability: 1000 };
+// Gemini chiqish o'lchami: 2K (tez, arzon) yoki 4K (eng ko'p detal, sekinroq va qimmatroq)
+const SIZES = ["2K", "4K"];
 
 // Asosiy Gemini modeli topilmasa (Google modellarni almashtirib turadi) shular ketma-ket sinaladi.
 // Kalitda model qo'lda ko'rsatilgan bo'lsa, faqat o'sha ishlatiladi.
@@ -122,15 +124,15 @@ function errText(j: any): string {
   return "";
 }
 
-const timeout = () => AbortSignal.timeout(100000);
+const timeout = (ms = 100000) => AbortSignal.timeout(ms);
 
 /* ---------- Provayderlar ---------- */
 
-async function runGemini(key: string, model: string, input: Img, prompt: string, aspect: string, withConfig = true): Promise<Img> {
+async function runGemini(key: string, model: string, input: Img, prompt: string, aspect: string, size: string, withConfig = true): Promise<Img> {
   const generationConfig: Record<string, unknown> = { responseModalities: ["TEXT", "IMAGE"] };
   if (withConfig && aspect) {
-    // 2.5 avlodi imageSize'ni bilmaydi; yangilarida 2K so'ralmasa 1K qaytadi
-    generationConfig.imageConfig = /^gemini-2\.5/.test(model) ? { aspectRatio: aspect } : { aspectRatio: aspect, imageSize: "2K" };
+    // 2.5 avlodi imageSize'ni bilmaydi; yangilarida 2K/4K so'ralmasa 1K qaytadi
+    generationConfig.imageConfig = /^gemini-2\.5/.test(model) ? { aspectRatio: aspect } : { aspectRatio: aspect, imageSize: size };
   }
   const r = await fetch(
     "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent",
@@ -141,7 +143,7 @@ async function runGemini(key: string, model: string, input: Img, prompt: string,
         contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: input.mime, data: b64(input.bytes) } }] }],
         generationConfig,
       }),
-      signal: timeout(),
+      signal: timeout(size === "4K" ? 125000 : 100000),
     },
   );
   const j = await r.json().catch(() => null);
@@ -149,7 +151,7 @@ async function runGemini(key: string, model: string, input: Img, prompt: string,
     const msg = errText(j) || "HTTP " + r.status;
     // Model rasm sozlamasini (imageConfig) tanimasa, shu sozlamasiz qayta uriniladi
     if (r.status === 400 && withConfig && aspect && /image_?config|image_?size|aspect/i.test(msg)) {
-      return await runGemini(key, model, input, prompt, aspect, false);
+      return await runGemini(key, model, input, prompt, aspect, size, false);
     }
     throw new ProviderError(r.status, msg);
   }
@@ -253,13 +255,13 @@ function isModelGone(e: ProviderError): boolean {
   return e.status === 404 || /not found|no longer available|shut ?down|deprecated/i.test(e.message);
 }
 
-async function runGeminiModels(k: any, input: Img, prompt: string, aspect: string): Promise<Img> {
+async function runGeminiModels(k: any, input: Img, prompt: string, aspect: string, size: string): Promise<Img> {
   const own = (k.model || "").trim();
   const models = own ? [own] : [DEFAULT_MODEL.gemini].concat(GEMINI_FALLBACK);
   let last: ProviderError | null = null;
   for (const m of models) {
     try {
-      return await runGemini(k.key_value, m, input, prompt, aspect);
+      return await runGemini(k.key_value, m, input, prompt, aspect, size);
     } catch (e) {
       if (e instanceof ProviderError && isModelGone(e) && !isAuthError(e)) { last = e; continue; }
       throw e;
@@ -268,11 +270,11 @@ async function runGeminiModels(k: any, input: Img, prompt: string, aspect: strin
   throw last as ProviderError;
 }
 
-async function runProvider(k: any, input: Img, mode: string, aspect: string): Promise<Img> {
+async function runProvider(k: any, input: Img, mode: string, aspect: string, size: string): Promise<Img> {
   const model = (k.model || "").trim() || DEFAULT_MODEL[k.provider];
   const prompt = PROMPTS[mode] || PROMPTS.enhance;
   switch (k.provider) {
-    case "gemini": return await runGeminiModels(k, input, prompt, aspect);
+    case "gemini": return await runGeminiModels(k, input, prompt, aspect, size);
     case "openai": return await runOpenAI(k.key_value, model, input, prompt);
     case "replicate": return await runReplicate(k.key_value, model, input, mode);
     case "stability": return await runStability(k.key_value, input);
@@ -384,6 +386,7 @@ async function actEnhance(u: User, body: any) {
   if (s.ai_enabled !== "on") throw new HttpError(503, "AI xizmati hozircha o'chirilgan.");
   const mode = MODES.indexOf(body.mode) >= 0 ? body.mode : "enhance";
   const aspect = ASPECTS.indexOf(body.aspect) >= 0 ? body.aspect : "";
+  const size = SIZES.indexOf(body.size) >= 0 ? body.size : "2K";
   const mime = ["image/jpeg", "image/png", "image/webp"].indexOf(body.mime) >= 0 ? body.mime : "";
   if (!mime) throw new HttpError(400, "Rasm formati qo'llab-quvvatlanmaydi.");
   const image = typeof body.image === "string" ? body.image : "";
@@ -414,7 +417,7 @@ async function actEnhance(u: User, body: any) {
   for (const k of keys) {
     const t0 = Date.now();
     try {
-      const out = await runProvider(k, input, mode, aspect);
+      const out = await runProvider(k, input, mode, aspect, size);
       const used = (await db.rpc("bump_usage", { p_user: u.id })).data as number;
       await db.from("api_keys").update({
         success_count: k.success_count + 1, consecutive_failures: 0, last_used_at: new Date().toISOString(),

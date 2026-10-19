@@ -54,7 +54,9 @@ export function AuthProvider({ children }) {
     const { data, error } = await supabase.auth.signUp({
       email: email.trim(),
       password,
-      options: { data: { display_name: (name || '').trim() } },
+      // Tasdiqlash xatidagi havola sayt manziliga olib borsin (boshqa qurilmada ochilganda "localhost"ga emas).
+      // Manzil Supabase'da Authentication → URL Configuration → Redirect URLs ro'yxatida bo'lmasa, Site URL ishlatiladi.
+      options: { data: { display_name: (name || '').trim() }, emailRedirectTo: window.location.origin },
     })
     if (error) throw new Error(authMessage(error))
     return Boolean(data.session)

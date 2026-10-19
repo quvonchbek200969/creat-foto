@@ -8,7 +8,7 @@ import { nearestAspect } from '../lib/pixels.js'
 // AI bilan yaxshilash paneli. Natija onResult({bitmap, provider, mode, nativeW, nativeH}) orqali Studiyaga qaytadi.
 // compact — "Tezkor" bo'limidagi ixcham Gemini kartasi (bitta tugma); aks holda to'liq panel ("✨ AI" bo'limi).
 // Manba: server tayyor bo'lsa — server (kalitlar serverda), aks holda yoki server xato bersa — foydalanuvchining o'z Gemini kaliti.
-export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard, compact = false }) {
+export default function AiPanel({ src, ai, target = 0, useAi, onUseAi, onResult, onDiscard, compact = false }) {
   const { hasBackend, user, isSuper } = useAuth()
   const [mode, setMode] = useState('enhance')
   const [provider, setProvider] = useState('auto')
@@ -42,19 +42,22 @@ export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard, 
     setBusy(true)
     setErr('')
     try {
-      const maxSide = serverReady ? Math.min(2048, ...chosen.map((p) => p.maxSide)) : 2048
+      // 3K/4K maqsadida Gemini 4K natija beradi (ko'proq detal), kirishga ham kattaroq rasm yuboriladi
+      const size = target >= 3072 ? '4K' : '2K'
+      const wantSide = size === '4K' ? 3072 : 2048
+      const maxSide = serverReady ? Math.min(wantSide, ...chosen.map((p) => p.maxSide)) : wantSide
       const { base64, mime, width, height } = await bitmapToJpegBase64(src.bitmap, maxSide)
       const aspect = nearestAspect(width, height)
       let res
       if (serverReady) {
         try {
-          res = await enhanceOnServer({ base64, mime, mode, provider, aspect })
+          res = await enhanceOnServer({ base64, mime, mode, provider, aspect, size })
         } catch (e) {
           if (!keySaved) throw e // server ishlamadi, lekin o'z kaliti bor bo'lsa — o'sha bilan davom etamiz
-          res = await enhanceWithOwnKey({ base64, mime, mode, aspect })
+          res = await enhanceWithOwnKey({ base64, mime, mode, aspect, size })
         }
       } else {
-        res = await enhanceWithOwnKey({ base64, mime, mode, aspect })
+        res = await enhanceWithOwnKey({ base64, mime, mode, aspect, size })
       }
       const raw = await createImageBitmap(res.blob)
       const nativeW = raw.width, nativeH = raw.height
@@ -125,7 +128,7 @@ export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard, 
   const runButton = (
     <button className="btn btn-primary w-full !min-h-12 text-[15px]" onClick={run} disabled={!canRun || busy}>
       {busy
-        ? <><span className="spinner" /> Gemini ishlayapti… (10–40 soniya)</>
+        ? <><span className="spinner" /> Gemini ishlayapti… ({target >= 3072 ? '40–90' : '10–40'} soniya)</>
         : compact ? <>✨ Gemini bilan tiniqlashtirish</> : <>✨ AI bilan ishlov berish</>}
     </button>
   )

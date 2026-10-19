@@ -14,7 +14,7 @@ export const PROVIDER_INFO = {
   gemini: {
     label: 'Google Gemini',
     model: 'gemini-nano-banana-2.1',
-    maxSide: 2048,
+    maxSide: 3072,
     keyUrl: 'https://aistudio.google.com/apikey',
     note: 'Rasm tahrirlash modeli (2K natija). Rasm modellari bepul tarifda yo‘q — Google hisobida to‘lov yoqilgan bo‘lishi kerak.',
   },
@@ -73,8 +73,8 @@ export async function callApi(action, payload = {}) {
 }
 
 // Natija: { blob, provider }
-export async function enhanceOnServer({ base64, mime, mode, provider, aspect }) {
-  const r = await callApi('enhance', { image: base64, mime, mode, provider: provider || 'auto', aspect })
+export async function enhanceOnServer({ base64, mime, mode, provider, aspect, size }) {
+  const r = await callApi('enhance', { image: base64, mime, mode, provider: provider || 'auto', aspect, size })
   return { blob: base64ToBlob(r.image, r.mime), provider: r.provider, used: r.used, limit: r.limit }
 }
 
@@ -111,10 +111,10 @@ class GeminiError extends Error {
 // 2.5 avlodi imageSize'ni bilmaydi; 3+ avlodda 2K so'raladi (aks holda 1K qaytadi)
 const supportsSize = (model) => !/^gemini-2\.5/.test(model)
 
-async function geminiOnce(key, model, { base64, mime, mode, aspect }, withImageConfig) {
+async function geminiOnce(key, model, { base64, mime, mode, aspect, size }, withImageConfig) {
   const generationConfig = { responseModalities: ['TEXT', 'IMAGE'] }
   if (withImageConfig && aspect) {
-    generationConfig.imageConfig = { aspectRatio: aspect, ...(supportsSize(model) ? { imageSize: '2K' } : {}) }
+    generationConfig.imageConfig = { aspectRatio: aspect, ...(supportsSize(model) ? { imageSize: size === '4K' ? '4K' : '2K' } : {}) }
   }
   let res
   try {
@@ -133,7 +133,7 @@ async function geminiOnce(key, model, { base64, mime, mode, aspect }, withImageC
   if (!res.ok) {
     const msg = json?.error?.message || `HTTP ${res.status}`
     if (res.status === 400 && /API key/i.test(msg)) throw new GeminiError('Gemini kaliti noto‘g‘ri.')
-    if (res.status === 400 && withImageConfig && /image_?config|image_?size|aspect/i.test(msg)) return geminiOnce(key, model, { base64, mime, mode, aspect }, false)
+    if (res.status === 400 && withImageConfig && /image_?config|image_?size|aspect/i.test(msg)) return geminiOnce(key, model, { base64, mime, mode, aspect, size }, false)
     if (res.status === 403) throw new GeminiError('Gemini kaliti bu amalga ruxsat bermadi. Kalit to‘g‘riligini tekshiring va Google hisobida to‘lov yoqilganini tasdiqlang.')
     if (res.status === 429 && /limit:\s*0|free.?tier|billing/i.test(msg)) {
       throw new GeminiError('Bu kalit bepul tarifda — Gemini rasm modellari uchun Google AI Studio’da to‘lov (billing) yoqilishi kerak.')
@@ -151,13 +151,13 @@ async function geminiOnce(key, model, { base64, mime, mode, aspect }, withImageC
   throw new GeminiError(reason ? `Gemini rasm qaytarmadi (${reason}). Boshqa rasm yoki rejimni sinang.` : 'Gemini rasm qaytarmadi. Qayta urinib ko‘ring.')
 }
 
-export async function enhanceWithOwnKey({ base64, mime, mode, aspect }) {
+export async function enhanceWithOwnKey({ base64, mime, mode, aspect, size }) {
   const key = getLocalKey()
   if (!key) throw new Error('Avval Gemini API kalitingizni kiriting.')
   let last
   for (const model of GEMINI_MODELS) {
     try {
-      return await geminiOnce(key, model, { base64, mime, mode, aspect }, true)
+      return await geminiOnce(key, model, { base64, mime, mode, aspect, size }, true)
     } catch (e) {
       if (!(e instanceof GeminiError) || !e.retryModel) throw e
       last = e
