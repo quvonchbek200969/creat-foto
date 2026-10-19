@@ -2,10 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import { AI_MODES, PROVIDER_INFO, callApi, enhanceOnServer, enhanceWithOwnKey, getLocalKey, setLocalKey } from '../lib/ai.js'
-import { bitmapToJpegBase64 } from '../lib/engine.js'
+import { bitmapToJpegBase64, fitToSource } from '../lib/engine.js'
+import { nearestAspect } from '../lib/pixels.js'
 
-// AI bilan yaxshilash paneli. Natija onResult({bitmap, provider, mode, width, height}) orqali Studiyaga qaytadi.
-export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard }) {
+// AI bilan yaxshilash paneli. Natija onResult({bitmap, provider, mode, nativeW, nativeH}) orqali Studiyaga qaytadi.
+// compact — "Tezkor" bo'limidagi ixcham Gemini kartasi (bitta tugma); aks holda to'liq panel ("✨ AI" bo'limi).
+// Manba: server tayyor bo'lsa — server (kalitlar serverda), aks holda yoki server xato bersa — foydalanuvchining o'z Gemini kaliti.
+export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard, compact = false }) {
   const { hasBackend, user, isSuper } = useAuth()
   const [mode, setMode] = useState('enhance')
   const [provider, setProvider] = useState('auto')
@@ -31,22 +34,32 @@ export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard }
 
   const providers = status?.providers || []
   const chosen = provider === 'auto' ? providers : providers.filter((p) => p.id === provider)
-  const limitReached = status && !status.unlimited && status.used >= status.limit
-  const canRun = hasBackend
-    ? Boolean(user && status?.enabled && chosen.length && !limitReached)
-    : keySaved
+  const limitReached = Boolean(status && !status.unlimited && status.used >= status.limit)
+  const serverReady = Boolean(hasBackend && user && status?.enabled && chosen.length && !limitReached)
+  const canRun = serverReady || keySaved
 
   async function run() {
     setBusy(true)
     setErr('')
     try {
-      const maxSide = hasBackend ? Math.min(2048, ...chosen.map((p) => p.maxSide)) : 2048
-      const { base64, mime } = await bitmapToJpegBase64(src.bitmap, maxSide)
-      const res = hasBackend
-        ? await enhanceOnServer({ base64, mime, mode, provider })
-        : await enhanceWithOwnKey({ base64, mime, mode })
-      const bitmap = await createImageBitmap(res.blob)
-      onResult({ bitmap, provider: res.provider, mode })
+      const maxSide = serverReady ? Math.min(2048, ...chosen.map((p) => p.maxSide)) : 2048
+      const { base64, mime, width, height } = await bitmapToJpegBase64(src.bitmap, maxSide)
+      const aspect = nearestAspect(width, height)
+      let res
+      if (serverReady) {
+        try {
+          res = await enhanceOnServer({ base64, mime, mode, provider, aspect })
+        } catch (e) {
+          if (!keySaved) throw e // server ishlamadi, lekin o'z kaliti bor bo'lsa — o'sha bilan davom etamiz
+          res = await enhanceWithOwnKey({ base64, mime, mode, aspect })
+        }
+      } else {
+        res = await enhanceWithOwnKey({ base64, mime, mode, aspect })
+      }
+      const raw = await createImageBitmap(res.blob)
+      const nativeW = raw.width, nativeH = raw.height
+      const bitmap = await fitToSource(raw, src.bitmap)
+      onResult({ bitmap, provider: res.provider, mode, nativeW, nativeH })
       if (hasBackend && res.limit !== undefined) setStatus((s) => (s ? { ...s, used: res.used, limit: res.limit } : s))
     } catch (e) {
       setErr(e.message)
@@ -61,6 +74,108 @@ export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard }
     setKeySaved(Boolean(key.trim()))
   }
 
+  // Nega server ishlatilmayapti — qisqa tushuntirish (o'z kalit bilan ishlash mumkinligi baribir aytiladi)
+  function serverNote() {
+    if (!hasBackend || serverReady) return null
+    if (!user) {
+      return (
+        <>
+          Server AI uchun hisobingizga kiring:{' '}
+          <Link className="underline" to="/login">Kirish</Link> · <Link className="underline" to="/register">Ro‘yxatdan o‘tish</Link>
+        </>
+      )
+    }
+    if (statusErr) return statusErr
+    if (!status) return <span className="inline-flex items-center gap-2"><span className="spinner" /> Server tekshirilmoqda…</span>
+    if (!status.enabled) return 'AI xizmati hozircha administrator tomonidan o‘chirib qo‘yilgan.'
+    if (!providers.length) {
+      return isSuper
+        ? <>Serverda AI kaliti yo‘q — <Link className="underline" to="/admin?tab=keys">API kalit qo‘shing</Link>.</>
+        : 'Serverda AI kaliti hali qo‘shilmagan.'
+    }
+    if (limitReached) return 'Bugungi server limitingiz tugadi.'
+    return null
+  }
+  const note = serverNote()
+
+  const keyBox = (
+    <div className="card-soft space-y-2 p-3">
+      <label className="label" htmlFor={`gem-key-${compact ? 'c' : 'f'}`}>Google Gemini API kaliti{hasBackend ? ' (o‘z kalitingiz)' : ''}</label>
+      <input
+        id={`gem-key-${compact ? 'c' : 'f'}`}
+        className="input"
+        type="password"
+        autoComplete="off"
+        placeholder="AIza…"
+        value={key}
+        onChange={(e) => { setKey(e.target.value); setKeySaved(false) }}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="btn btn-sm" onClick={saveKey} disabled={!key.trim() || keySaved}>{keySaved ? 'Saqlandi ✓' : 'Saqlash'}</button>
+        {keySaved && <button className="btn btn-ghost btn-sm" onClick={() => { setKey(''); setLocalKey(''); setKeySaved(false) }}>O‘chirish</button>}
+        <a className="text-xs text-[var(--cyan)] underline" href={PROVIDER_INFO.gemini.keyUrl} target="_blank" rel="noreferrer">Kalitni qayerdan olaman?</a>
+      </div>
+      <p className="faint text-[11px] leading-snug">
+        Gemini rasm modellari <b>bepul tarifda ishlamaydi</b>: kalit to‘lov (billing) yoqilgan Google loyihasidan bo‘lishi kerak
+        (rasm boshiga taxminan 3–5 sent). Kalit faqat shu brauzerda saqlanadi va faqat Google’ga yuboriladi. Umumiy kompyuterda saqlamang.
+      </p>
+    </div>
+  )
+
+  const runButton = (
+    <button className="btn btn-primary w-full !min-h-12 text-[15px]" onClick={run} disabled={!canRun || busy}>
+      {busy
+        ? <><span className="spinner" /> Gemini ishlayapti… (10–40 soniya)</>
+        : compact ? <>✨ Gemini bilan tiniqlashtirish</> : <>✨ AI bilan ishlov berish</>}
+    </button>
+  )
+
+  const result = ai && (
+    <div className="card-soft space-y-2 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold">AI natijasi tayyor</span>
+        <span className="badge badge-ok">{PROVIDER_INFO[ai.provider]?.label || ai.provider}</span>
+      </div>
+      <p className="faint text-xs">
+        {AI_MODES.find((m) => m.id === ai.mode)?.name} · AI qaytargan: {ai.nativeW || ai.bitmap.width}×{ai.nativeH || ai.bitmap.height} px
+        {ai.bitmap.width !== (ai.nativeW || ai.bitmap.width) && <> → asl o‘lchamga keltirildi</>}
+      </p>
+      <label className="flex cursor-pointer items-center gap-2 text-sm">
+        <input type="checkbox" className="h-4 w-4 accent-[var(--cyan)]" checked={useAi} onChange={(e) => onUseAi(e.target.checked)} />
+        AI natijasini ishlatish
+      </label>
+      <p className="faint text-[11px] leading-snug">AI natijasi ustiga yengil aniqlik avtomatik qo‘shildi. “Sozlash” bo‘limida aniqlik, kattalashtirish va ranglarni o‘zgartirishingiz mumkin.</p>
+      <button className="btn btn-ghost btn-sm" onClick={onDiscard}>Natijani o‘chirish</button>
+    </div>
+  )
+
+  const limitLine = serverReady && (
+    <p className="muted text-xs">
+      {status.unlimited ? 'Cheklovsiz foydalanish' : <>Bugungi limit: <b className="text-white">{status.used}</b> / {status.limit}</>}
+    </p>
+  )
+
+  /* ───────── Ixcham ko'rinish: "Tezkor" bo'limining tepasida ───────── */
+  if (compact) {
+    return (
+      <div className="mb-3 space-y-3 rounded-2xl border border-[rgba(34,211,238,.35)] bg-[rgba(34,211,238,.06)] p-3">
+        <div>
+          <p className="text-sm font-semibold">✨ Gemini AI bilan tiniqlashtirish</p>
+          <p className="faint mt-0.5 text-xs leading-snug">
+            Eng kuchli usul: xira rasmni qayta tiklaydi, mayda detallarni ochadi. Natija ustiga yengil aniqlik ham qo‘shiladi.
+          </p>
+        </div>
+        {note && <div className="alert alert-info text-xs">{note}</div>}
+        {limitLine}
+        {(!serverReady || err) && keyBox}
+        {runButton}
+        {err && <div className="alert alert-err" role="alert">{err}</div>}
+        {result}
+      </div>
+    )
+  }
+
+  /* ───────── To'liq panel ───────── */
   return (
     <div className="space-y-4">
       <div>
@@ -81,76 +196,24 @@ export default function AiPanel({ src, ai, useAi, onUseAi, onResult, onDiscard }
         </div>
       </div>
 
-      {hasBackend ? (
-        !user ? (
-          <div className="alert alert-info">
-            AI funksiyasidan foydalanish uchun hisobingizga kiring.
-            <div className="mt-2 flex gap-2">
-              <Link className="btn btn-primary btn-sm" to="/login">Kirish</Link>
-              <Link className="btn btn-sm" to="/register">Ro‘yxatdan o‘tish</Link>
-            </div>
+      {note && <div className="alert alert-info text-sm">{note}</div>}
+      {serverReady && (
+        <>
+          <div>
+            <label className="label" htmlFor="ai-provider">AI xizmati</label>
+            <select id="ai-provider" className="input" value={provider} onChange={(e) => setProvider(e.target.value)}>
+              <option value="auto">Avtomatik (eng yaxshi mavjud)</option>
+              {providers.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
           </div>
-        ) : statusErr ? (
-          <div className="alert alert-err">{statusErr}</div>
-        ) : !status ? (
-          <p className="muted flex items-center gap-2 text-sm"><span className="spinner" /> Tekshirilmoqda…</p>
-        ) : !status.enabled ? (
-          <div className="alert alert-info">AI xizmati hozircha administrator tomonidan o‘chirib qo‘yilgan.</div>
-        ) : !providers.length ? (
-          <div className="alert alert-info">
-            Hali AI kaliti qo‘shilmagan.{' '}
-            {isSuper ? <>Boshqaruv bo‘limida <Link className="underline" to="/admin?tab=keys">API kalit qo‘shing</Link>.</> : 'Administratorga murojaat qiling.'}
-          </div>
-        ) : (
-          <>
-            <div>
-              <label className="label" htmlFor="ai-provider">AI xizmati</label>
-              <select id="ai-provider" className="input" value={provider} onChange={(e) => setProvider(e.target.value)}>
-                <option value="auto">Avtomatik (eng yaxshi mavjud)</option>
-                {providers.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-              </select>
-            </div>
-            <p className="muted text-xs">
-              {status.unlimited ? 'Cheklovsiz foydalanish' : <>Bugungi limit: <b className="text-white">{status.used}</b> / {status.limit}</>}
-            </p>
-            {limitReached && <div className="alert alert-err">Bugungi AI limitingiz tugadi. Ertaga qayta urinib ko‘ring.</div>}
-          </>
-        )
-      ) : (
-        <div className="card-soft space-y-2 p-3">
-          <label className="label" htmlFor="gem-key">Google Gemini API kaliti</label>
-          <input id="gem-key" className="input" type="password" autoComplete="off" placeholder="AIza…" value={key} onChange={(e) => { setKey(e.target.value); setKeySaved(false) }} />
-          <div className="flex flex-wrap items-center gap-2">
-            <button className="btn btn-sm" onClick={saveKey} disabled={!key.trim() || keySaved}>{keySaved ? 'Saqlandi ✓' : 'Saqlash'}</button>
-            {keySaved && <button className="btn btn-ghost btn-sm" onClick={() => { setKey(''); setLocalKey(''); setKeySaved(false) }}>O‘chirish</button>}
-            <a className="text-xs text-[var(--cyan)] underline" href={PROVIDER_INFO.gemini.keyUrl} target="_blank" rel="noreferrer">Kalitni qayerdan olaman?</a>
-          </div>
-          <p className="faint text-[11px] leading-snug">
-            Kalit faqat shu qurilmadagi brauzeringizda saqlanadi va faqat Google’ga yuboriladi. Umumiy kompyuterda saqlamang.
-          </p>
-        </div>
+          {limitLine}
+        </>
       )}
+      {(!serverReady || err) && keyBox}
 
-      <button className="btn btn-primary w-full !min-h-12 text-[15px]" onClick={run} disabled={!canRun || busy}>
-        {busy ? <><span className="spinner" /> AI ishlayapti… (10–40 soniya)</> : <>✨ AI bilan ishlov berish</>}
-      </button>
+      {runButton}
       {err && <div className="alert alert-err" role="alert">{err}</div>}
-
-      {ai && (
-        <div className="card-soft space-y-2 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-sm font-semibold">AI natijasi tayyor</span>
-            <span className="badge badge-ok">{PROVIDER_INFO[ai.provider]?.label || ai.provider}</span>
-          </div>
-          <p className="faint text-xs">{ai.bitmap.width}×{ai.bitmap.height} px · {AI_MODES.find((m) => m.id === ai.mode)?.name}</p>
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input type="checkbox" className="h-4 w-4 accent-[var(--cyan)]" checked={useAi} onChange={(e) => onUseAi(e.target.checked)} />
-            AI natijasini ishlatish
-          </label>
-          <p className="faint text-[11px] leading-snug">AI natijasi ustiga “Sozlash” bo‘limidagi aniqlik, kattalashtirish va ranglarni ham qo‘shishingiz mumkin.</p>
-          <button className="btn btn-ghost btn-sm" onClick={onDiscard}>Natijani o‘chirish</button>
-        </div>
-      )}
+      {result}
 
       <p className="faint text-[11px] leading-snug">
         Eslatma: AI rasmni qayta chizadi, shuning uchun mayda detallar (matn, yuz chiziqlari) o‘zgarishi mumkin. Muhim rasmlarda asl nusxa bilan solishtiring.

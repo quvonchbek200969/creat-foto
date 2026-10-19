@@ -22,8 +22,12 @@ const KEYS = {
   oai: 'sk-test-openai-SECRETOAI',
   rep: 'r8_test_replicate_SECRETREP',
   stab: 'sk-stab-test-SECRETSTAB',
+  fb: 'AIza-fallback-key-0007-SECRETFB', // asosiy model "topilmadi" (404) qaytaradi
+  cfg: 'AIza-cfgrej-key-0008-SECRETCFG', // imageConfig'ni tanimaydi (400)
+  free: 'AIza-freetier-key-0009-SECRETFREE', // bepul tarif: rasm modeliga limit 0 (429)
 }
 const calls = []
+const gemCalls = [] // Gemini'ga ketgan so'rovlar: { url, generationConfig }
 const j = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 let repPolls = 0
 
@@ -36,6 +40,10 @@ globalThis.fetch = async (url, init = {}) => {
     if (url.includes(':generateContent')) {
       if (key === KEYS.bad) return j({ error: { message: `API key not valid: ${KEYS.bad}` } }, 403)
       const body = JSON.parse(init.body)
+      gemCalls.push({ url, key, generationConfig: body.generationConfig })
+      if (key === KEYS.fb && url.includes('gemini-nano-banana-2.1')) return j({ error: { message: 'models/gemini-nano-banana-2.1 is not found for API version v1beta' } }, 404)
+      if (key === KEYS.cfg && body.generationConfig.imageConfig) return j({ error: { message: 'Invalid JSON payload received. Unknown name "imageConfig" at generation_config' } }, 400)
+      if (key === KEYS.free) return j({ error: { message: 'You exceeded your current quota. Quota exceeded for metric: generate_content_free_tier_requests, limit: 0' } }, 429)
       const parts = body.contents[0].parts
       if (!parts[0].text.includes('Keep the exact same composition') || !parts[1].inline_data?.data) return j({ error: { message: 'bad request shape' } }, 400)
       return j({ candidates: [{ content: { parts: [{ text: 'done' }, { inlineData: { mimeType: 'image/png', data: PNG_B64 } }] } }] })
@@ -245,6 +253,57 @@ const img = btoa('x'.repeat(2000))
   const s = await call('ADMIN000000', { action: 'stats' })
   ok(s.status === 200 && s.json.requestsToday > 0 && s.json.activeKeys === 4 && s.json.failures7d === 3, 'stats admin uchun ishlaydi', JSON.stringify(s.json))
   ok((await call('USER0000000', { action: 'stats' })).status === 403, 'stats oddiy foydalanuvchiga yopiq')
+}
+
+/* 9b) Gemini: yangi asosiy model, zaxira model, 2K va kadr nisbati, billing xabari */
+{
+  const add = (o) => call('SUPER000000', { action: 'key-add', provider: 'gemini', priority: 1, ...o })
+  const enh = (o = {}) => call('ADMIN000000', { action: 'enhance', image: img, mime: 'image/jpeg', provider: 'gemini', ...o })
+  const dropKey = async (label) => { const k = DB.api_keys.find((x) => x.label === label); if (k) await call('SUPER000000', { action: 'key-delete', id: k.id }) }
+
+  // Qolgan faol kalitlar vaqtincha o'chiriladi: bitta kalit muvaffaqiyatsiz bo'lsa funksiya keyingisiga o'tadi va sinovni yashirib qo'yadi
+  const others = DB.api_keys.filter((x) => x.is_active)
+  for (const o of others) await call('SUPER000000', { action: 'key-toggle', id: o.id, active: false })
+
+  await add({ key: KEYS.fb, label: 'zaxira-sinov' })
+  let n0 = gemCalls.length
+  const f = await enh({ aspect: '4:3' })
+  const fc = gemCalls.slice(n0)
+  ok(f.status === 200 && f.json.image === PNG_B64, 'Gemini: asosiy model topilmasa zaxira model ishlaydi', f.json.error || '')
+  ok(fc.length === 2 && fc[0].url.includes('gemini-nano-banana-2.1') && fc[1].url.includes('gemini-2.5-flash-image'), 'Gemini: avval nano-banana-2.1, keyin 2.5-flash-image', fc.map((c) => c.url.split('/models/')[1]).join(' -> '))
+  ok(JSON.stringify(fc[0].generationConfig.imageConfig) === '{"aspectRatio":"4:3","imageSize":"2K"}', 'Gemini: yangi modelga kadr nisbati va 2K yuboriladi', JSON.stringify(fc[0].generationConfig.imageConfig))
+  ok(JSON.stringify(fc[1].generationConfig.imageConfig) === '{"aspectRatio":"4:3"}', 'Gemini: 2.5 modelga imageSize yuborilmaydi', JSON.stringify(fc[1].generationConfig.imageConfig))
+  const fbKey = DB.api_keys.find((x) => x.label === 'zaxira-sinov')
+  ok(fbKey.success_count >= 1 && fbKey.failure_count === 0, 'Gemini: model almashinuvi kalit xatosi deb hisoblanmaydi')
+
+  n0 = gemCalls.length
+  await enh()
+  await enh({ aspect: 'evil; 1:1' })
+  ok(gemCalls.slice(n0).every((c) => !c.generationConfig.imageConfig), 'Gemini: kadr nisbati yo\'q yoki noto\'g\'ri bo\'lsa imageConfig yuborilmaydi')
+
+  // Kalitda model qo'lda ko'rsatilgan: faqat o'sha ishlatiladi (zaxiraga o'tilmaydi)
+  await dropKey('zaxira-sinov')
+  await add({ key: KEYS.fb, label: 'qolda-model', model: 'gemini-nano-banana-2.1' })
+  n0 = gemCalls.length
+  const own = await enh({ aspect: '1:1' })
+  ok(own.status === 502 && gemCalls.length - n0 === 1 && gemCalls[n0].url.includes('gemini-nano-banana-2.1'), 'Gemini: kalitda model aniq ko\'rsatilsa zaxiraga o\'tilmaydi', `${own.status}, ${gemCalls.length - n0} so'rov`)
+  await dropKey('qolda-model')
+
+  // imageConfig'ni rad etgan model: shu sozlamasiz qayta uriniladi
+  await add({ key: KEYS.cfg, label: 'cfg-sinov' })
+  n0 = gemCalls.length
+  const c = await enh({ aspect: '16:9' })
+  const cc = gemCalls.slice(n0)
+  ok(c.status === 200 && cc.length === 2 && cc[0].generationConfig.imageConfig && !cc[1].generationConfig.imageConfig, 'Gemini: imageConfig rad etilsa, usiz qayta urinadi', c.json.error || '')
+  await dropKey('cfg-sinov')
+
+  // Bepul tarif: tushunarli xabar
+  await add({ key: KEYS.free, label: 'bepul-sinov' })
+  const fr = await enh({ aspect: '1:1' })
+  ok(fr.status === 502 && /billing/i.test(fr.json.error), 'Gemini: bepul tarif (limit: 0) — to\'lov yoqish kerakligi aytiladi', fr.json.error)
+  await dropKey('bepul-sinov')
+
+  for (const o of others) await call('SUPER000000', { action: 'key-toggle', id: o.id, active: true })
 }
 
 /* 10) Hech bir javobda xom kalit sizmaganini tekshirish */

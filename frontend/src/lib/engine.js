@@ -162,6 +162,22 @@ export async function bitmapToJpegBase64(bitmap, maxSide, quality = 0.92) {
   return { base64: await blobToBase64(blob), mime: 'image/jpeg', width: img.width, height: img.height }
 }
 
+// AI ko'pincha asl rasmdan kichik (1–2 K) qaytaradi. Saqlangan fayl asldan kichik bo'lib qolmasligi uchun natija
+// yuqori sifatli kattalashtirish bilan asl o'lchamga keltiriladi (kattaroq bo'lsa tegilmaydi).
+export async function fitToSource(aiBitmap, source) {
+  const aiMax = Math.max(aiBitmap.width, aiBitmap.height)
+  const srcMax = Math.max(source.width, source.height)
+  if (aiMax >= srcMax * 0.98) return aiBitmap
+  const f = srcMax / aiMax
+  const out = await createImageBitmap(aiBitmap, {
+    resizeWidth: Math.round(aiBitmap.width * f),
+    resizeHeight: Math.round(aiBitmap.height * f),
+    resizeQuality: 'high',
+  })
+  aiBitmap.close?.()
+  return out
+}
+
 export function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const r = new FileReader()

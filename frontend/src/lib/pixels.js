@@ -211,8 +211,11 @@ export function sharpen(d, w, h, amount, radius, threshold = 0) {
   const a = (amount / 100) * 2.4
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     const diff = L[i] - B[i]
-    if (Math.abs(diff) < threshold) continue
     let add = diff * a
+    if (threshold > 0) { // yumshoq to'siq: shovqin darajasidan kuchsiz farqlar kuchaytirilmaydi, aniq chegaralar to'liq
+      const t = Math.abs(diff) / threshold
+      if (t < 1) add *= t * t
+    }
     if (add > 70) add = 70
     else if (add < -70) add = -70 // halo (yorug' hoshiya)ni cheklash
     d[j] += add; d[j + 1] += add; d[j + 2] += add
@@ -329,7 +332,31 @@ export function processImage(img, p, k = 1) {
     w = nw; h = nh
   }
   clarity(data, w, h, q.clarity)
-  sharpen(data, w, h, q.sharpen, Math.max(0.4, q.radius * k))
+  // Aniqlik radiusi rasm o'lchamiga moslanadi: 12 MP suratda 1.2 px deyarli sezilmaydi, chunki xiralik ham shuncha piksel keng.
+  // Ko'rib chiqishda (k < 1) rasm kichraytirilgan, shuning uchun o'lcham to'liq nusxaga qayta hisoblanadi — natija bir xil bo'ladi.
+  const r = Math.max(0.4, q.radius * k * sharpenBoost(Math.max(w, h) / k))
+  // Kuchli aniqlik donadorlikni ham kuchaytirib yubormasligi uchun: rasmdagi shovqin darajasidan kuchsiz farqlar o'tkazilmaydi
+  // (Katta radiusda shovqin deyarli to'liq "farq" bo'lib qoladi, shuning uchun u yerda eshik balandroq.)
+  const noise = q.sharpen > 0 ? estimateNoise(data, w, h) : 0
+  sharpen(data, w, h, q.sharpen, r, noise * 2.5)
+  sharpen(data, w, h, q.sharpen * 0.45, r * 3, noise * 3) // o'rta masshtab: mayda chegaralar bilan birga teksturani ham jonlantiradi
   adjust(data, w * h, q)
   return { data, width: w, height: h }
+}
+
+// 1600 px gacha 1×, undan katta rasmda radius o'sib boradi (eng ko'pi bilan 3×)
+export function sharpenBoost(longSide) {
+  return Math.min(3, Math.max(1, longSide / 1600))
+}
+
+// Gemini qo'llab-quvvatlaydigan kadr nisbatlaridan rasmga eng yaqinini tanlaydi (AI kadrni o'zgartirib yubormasligi uchun)
+const ASPECTS = [['1:1', 1], ['2:3', 2 / 3], ['3:2', 3 / 2], ['3:4', 3 / 4], ['4:3', 4 / 3], ['4:5', 4 / 5], ['5:4', 5 / 4], ['9:16', 9 / 16], ['16:9', 16 / 9], ['21:9', 21 / 9]]
+export function nearestAspect(w, h) {
+  const r = w / h
+  let best = ASPECTS[0], bd = Infinity
+  for (const a of ASPECTS) {
+    const d = Math.abs(Math.log(r / a[1]))
+    if (d < bd) { bd = d; best = a }
+  }
+  return best[0]
 }

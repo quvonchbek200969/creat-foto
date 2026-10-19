@@ -7,7 +7,7 @@ import {
   makeSampleFile, paintBitmap, paintImageData, runProcess,
 } from '../lib/engine.js'
 import { DEFAULTS, effectiveScale } from '../lib/pixels.js'
-import { PRESETS, SLIDERS, isDefault, presetParams } from '../lib/presets.js'
+import { OPEN_PRESET, PRESETS, SLIDERS, aiAfterParams, isDefault, presetParams } from '../lib/presets.js'
 
 const PREVIEW_MAX = 1400
 const TABS = [
@@ -17,10 +17,10 @@ const TABS = [
 ]
 
 const FEATURES = [
-  ['🔍', 'Tiniqlashtirish', 'Xira rasmning chegaralarini keskinlashtiradi va teksturani ochadi.'],
+  ['🔍', 'Tiniqlashtirish', 'Rasm ochilishi bilan avtomatik keskinlashadi: chegaralar aniqlanadi, tekstura ochiladi.'],
   ['🔭', 'Kattalashtirish', '2×–4× gacha, Lanczos usulida — mayda detallar yo‘qolmaydi.'],
   ['🧹', 'Shovqin tozalash', 'Donadorlik va JPG izlarini chegarani buzmasdan yumshatadi.'],
-  ['✨', 'AI yordamchi', 'Gemini, OpenAI, Replicate yoki Stability orqali chuqur yaxshilash.'],
+  ['✨', 'Gemini AI', 'Eng kuchli tiniqlashtirish: Google Gemini xira rasmni qayta tiklaydi. OpenAI, Replicate, Stability ham bor.'],
   ['🎨', 'Rang va yorug‘lik', 'Avto-tuzatish, kontrast, to‘yinganlik, iliqlik — jonli ko‘rinish bilan.'],
   ['🔒', 'Maxfiylik', 'Oddiy ishlov rasmni qurilmangizdan chiqarmaydi, hammasi brauzerda.'],
 ]
@@ -29,7 +29,7 @@ export default function Studio() {
   const [src, setSrc] = useState(null) // { bitmap, name, size, shrunk }
   const [ai, setAi] = useState(null) // { bitmap, provider, mode }
   const [useAi, setUseAi] = useState(true)
-  const [params, setParams] = useState(DEFAULTS)
+  const [params, setParams] = useState(() => presetParams(OPEN_PRESET))
   const [tab, setTab] = useState('presets')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -104,7 +104,7 @@ export default function Studio() {
       const { bitmap, shrunk } = await loadBitmap(file)
       setAi(null)
       setUseAi(true)
-      setParams(DEFAULTS)
+      setParams(presetParams(OPEN_PRESET))
       setTab('presets')
       setSrc({ bitmap, name: file.name || 'rasm.png', size: file.size, shrunk })
     } catch (e) {
@@ -146,6 +146,19 @@ export default function Studio() {
       setExporting(false)
     }
   }
+
+  // AI natijasi kelganda mahalliy ishlov yengillashadi (shovqin/avto-tuzatish ikki marta qo'llanmasin), faqat aniqlik qoladi
+  const onAiResult = useCallback((r) => {
+    setAi(r)
+    setUseAi(true)
+    setErr('')
+    setParams((p) => aiAfterParams(p.scale))
+  }, [])
+  const onAiDiscard = useCallback(() => {
+    setAi(null)
+    setUseAi(true)
+    setParams((p) => ({ ...presetParams(OPEN_PRESET), scale: p.scale }))
+  }, [])
 
   const set = (key) => (v) => setParams((p) => ({ ...p, [key]: v }))
   const activePreset = PRESETS.find((p) => {
@@ -275,6 +288,18 @@ export default function Studio() {
         </div>
 
         {tab === 'presets' && (
+          <AiPanel
+            compact
+            src={src}
+            ai={ai}
+            useAi={useAi}
+            onUseAi={setUseAi}
+            onResult={onAiResult}
+            onDiscard={onAiDiscard}
+          />
+        )}
+
+        {tab === 'presets' && (
           <div className="grid grid-cols-2 gap-2">
             {PRESETS.map((p) => (
               <button
@@ -326,8 +351,8 @@ export default function Studio() {
             ai={ai}
             useAi={useAi}
             onUseAi={setUseAi}
-            onResult={(r) => { setAi(r); setUseAi(true); setErr('') }}
-            onDiscard={() => { setAi(null); setUseAi(true) }}
+            onResult={onAiResult}
+            onDiscard={onAiDiscard}
           />
         )}
       </aside>

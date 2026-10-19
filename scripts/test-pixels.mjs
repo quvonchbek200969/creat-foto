@@ -1,7 +1,9 @@
 // Tiniq: piksel algoritmlarini Node'da tekshirish.  Ishga tushirish:  node scripts/test-pixels.mjs
 import {
   DEFAULTS, denoise, estimateNoise, autoLevels, sharpen, clarity, adjust, resize, processImage, effectiveScale, MAX_OUT_PIXELS,
+  sharpenBoost, nearestAspect,
 } from '../frontend/src/lib/pixels.js'
+import { PRESETS, aiAfterParams, presetParams } from '../frontend/src/lib/presets.js'
 
 let failed = 0
 const ok = (cond, name, info = '') => {
@@ -183,6 +185,53 @@ const maxStep = (p) => { let m = 0; for (let x = 1; x < p.length; x++) m = Math.
   processImage(img, { denoise: 40, auto: 50, sharpen: 60, clarity: 25, vibrance: 10 })
   const ms = performance.now() - t0
   ok(ms < 15000, '2 MP rasm oqilona vaqtda ishlanadi', `${(ms / 1000).toFixed(1)} s`)
+}
+
+// 10) Aniqlik radiusi rasm o'lchamiga moslanadi (katta suratda eski qat'iy 1.4 px deyarli sezilmasdi)
+{
+  ok(sharpenBoost(800) === 1 && sharpenBoost(1600) === 1 && sharpenBoost(3200) === 2 && sharpenBoost(9000) === 3, 'sharpenBoost: 1600 px gacha 1×, keyin o\'sadi, eng ko\'pi 3×')
+  const Wb = 3200, Hb = 24
+  const mk = (w = Wb, soft = 1.4) => makeImage(w, Hb, { soft })
+  const step0 = maxStep(columnProfile(mk().data, Wb, Hb))
+  const oldWay = mk()
+  sharpen(oldWay.data, Wb, Hb, 85, 1.4) // eski usul: qat'iy radius
+  const gOld = maxStep(columnProfile(oldWay.data, Wb, Hb)) / step0
+  const full = processImage(mk(), { sharpen: 85, radius: 1.4 })
+  const gFull = maxStep(columnProfile(full.data, Wb, Hb)) / step0
+  ok(gFull > gOld * 1.15, '3200 px xira rasmda yangi aniqlik eskisidan sezilarli kuchli', `${gOld.toFixed(2)}× → ${gFull.toFixed(2)}×`)
+
+  // Ko'rib chiqish (kichraytirilgan, k=0.5) to'liq o'lcham bilan bir xil kuchda bo'lishi kerak
+  const half = { data: resize(mk().data, Wb, Hb, Wb / 2, Hb), width: Wb / 2, height: Hb }
+  const stepHalf = maxStep(columnProfile(half.data, half.width, Hb))
+  const prev = processImage(half, { sharpen: 85, radius: 1.4 }, 0.5)
+  const gPrev = maxStep(columnProfile(prev.data, prev.width, Hb)) / stepHalf
+  ok(Math.abs(gPrev - gFull) / gFull < 0.2, 'ko\'rib chiqish va to\'liq o\'lcham aniqligi mos', `${gPrev.toFixed(2)}× va ${gFull.toFixed(2)}×`)
+}
+
+// 10b) Shovqinli rasmda kuchli aniqlik donadorlikni portlatmasligi kerak, chegara esa baribir keskinlashishi kerak
+{
+  const noisy = () => makeImage(W, H, { noise: 14, soft: 1.5 })
+  const base = noisy()
+  const v0 = variance(base.data, W, 5, 50, 5, 100)
+  const step0 = maxStep(columnProfile(base.data, W, H))
+  const plain = noisy()
+  sharpen(plain.data, W, H, 85, 1.4) // eshik yo'q (ikki o'tish): shovqin ham to'liq kuchayadi
+  sharpen(plain.data, W, H, 85 * 0.45, 4.2)
+  const vPlain = variance(plain.data, W, 5, 50, 5, 100)
+  const gated = processImage(noisy(), { sharpen: 85, radius: 1.4 })
+  const vGated = variance(gated.data, W, 5, 50, 5, 100)
+  ok(vGated < vPlain * 0.5, 'shovqinli rasmda aniqlik shovqinni eshiksiz usuldan ancha kam kuchaytiradi', `dispersiya: asl ${v0.toFixed(0)}, eshiksiz ${vPlain.toFixed(0)}, eshikli ${vGated.toFixed(0)}`)
+  ok(maxStep(columnProfile(gated.data, W, H)) > step0 * 1.3, 'va chegara baribir keskinlashadi', `${(maxStep(columnProfile(gated.data, W, H)) / step0).toFixed(2)}×`)
+}
+
+// 11) Kadr nisbati (Gemini'ga yuboriladi) va tayyor sozlamalar
+{
+  const cases = [[4000, 3000, '4:3'], [1000, 1000, '1:1'], [1080, 1920, '9:16'], [3000, 2000, '3:2'], [1234, 1000, '5:4'], [800, 1200, '2:3']]
+  ok(cases.every(([w, h, a]) => nearestAspect(w, h) === a), 'nearestAspect eng yaqin kadr nisbatini tanlaydi', cases.map(([w, h]) => nearestAspect(w, h)).join(' '))
+  ok(PRESETS.every((p) => p.params.sharpen >= 45), 'hamma tayyor sozlamada aniqlik sezilarli (>= 45)')
+  ok(presetParams('auto').sharpen >= 80, '"Avto yaxshilash" kuchli aniqlik beradi')
+  const a = aiAfterParams(2)
+  ok(a.scale === 2 && a.denoise === 0 && a.auto === 0 && a.sharpen > 0, 'AI dan keyingi sozlama: faqat yengil aniqlik, shovqin/avto-tuzatish yo\'q')
 }
 
 console.log(failed ? `\n${failed} ta tekshiruv muvaffaqiyatsiz` : '\nHamma tekshiruvlar o\'tdi')

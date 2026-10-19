@@ -44,7 +44,7 @@ const LABELS: Record<string, string> = {
   stability: "Stability AI",
 };
 const DEFAULT_MODEL: Record<string, string> = {
-  gemini: "gemini-2.5-flash-image",
+  gemini: "gemini-nano-banana-2.1",
   openai: "gpt-image-1",
   replicate: "nightmareai/real-esrgan",
   stability: "fast",
@@ -52,19 +52,27 @@ const DEFAULT_MODEL: Record<string, string> = {
 // Provayder qabul qiladigan eng katta tomon (piksel). Klient rasmni shunga kichraytirib yuboradi.
 const MAX_SIDE: Record<string, number> = { gemini: 2048, openai: 2048, replicate: 1200, stability: 1000 };
 
+// Asosiy Gemini modeli topilmasa (Google modellarni almashtirib turadi) shular ketma-ket sinaladi.
+// Kalitda model qo'lda ko'rsatilgan bo'lsa, faqat o'sha ishlatiladi.
+const GEMINI_FALLBACK = ["gemini-2.5-flash-image"];
+// Gemini qo'llab-quvvatlaydigan kadr nisbatlari (klient rasmga eng yaqinini yuboradi)
+const ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
+
 const RULES =
-  "Keep the exact same composition, subject, faces, identity, text, colors and proportions. " +
-  "Do not add, remove or redraw objects. Output only the final image.";
+  "Keep the exact same composition, framing, subject, faces, identity, text, colors and proportions. " +
+  "Do not crop, add, remove or redraw objects. Output only the final image.";
 const PROMPTS: Record<string, string> = {
   enhance:
-    "Professionally enhance this photograph: make it noticeably sharper and clearer, recover fine detail and texture, " +
-    "remove noise and compression artifacts, and correct exposure, contrast and color balance naturally. " + RULES,
+    "This photo is soft, blurry or low in detail. Restore it as a crisp, sharp, high-resolution photograph: remove blur, " +
+    "sharpen every edge, recover fine textures (hair, skin, fabric, foliage, small text) realistically, remove noise and " +
+    "compression artifacts, and balance exposure, contrast and color naturally. The result must look clearly sharper than " +
+    "the input, but still like a real photo - not plastic or over-smoothed. " + RULES,
   upscale:
     "Upscale this image to a higher resolution with crisp, realistic detail. Reconstruct fine textures, sharpen edges " +
     "and remove blur, noise and JPEG artifacts. " + RULES,
   restore:
     "Restore this old or damaged photograph: remove scratches, dust, stains and fading, repair damaged areas, reduce " +
-    "noise and recover natural contrast and detail. If it is black and white keep it black and white. " + RULES,
+    "noise and recover natural contrast and sharp detail. If it is black and white keep it black and white. " + RULES,
   denoise:
     "Remove all noise and grain from this photo while preserving every fine detail and texture. " + RULES,
 };
@@ -118,7 +126,12 @@ const timeout = () => AbortSignal.timeout(100000);
 
 /* ---------- Provayderlar ---------- */
 
-async function runGemini(key: string, model: string, input: Img, prompt: string): Promise<Img> {
+async function runGemini(key: string, model: string, input: Img, prompt: string, aspect: string, withConfig = true): Promise<Img> {
+  const generationConfig: Record<string, unknown> = { responseModalities: ["TEXT", "IMAGE"] };
+  if (withConfig && aspect) {
+    // 2.5 avlodi imageSize'ni bilmaydi; yangilarida 2K so'ralmasa 1K qaytadi
+    generationConfig.imageConfig = /^gemini-2\.5/.test(model) ? { aspectRatio: aspect } : { aspectRatio: aspect, imageSize: "2K" };
+  }
   const r = await fetch(
     "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent",
     {
@@ -126,13 +139,20 @@ async function runGemini(key: string, model: string, input: Img, prompt: string)
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: input.mime, data: b64(input.bytes) } }] }],
-        generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+        generationConfig,
       }),
       signal: timeout(),
     },
   );
   const j = await r.json().catch(() => null);
-  if (!r.ok) throw new ProviderError(r.status, errText(j) || "HTTP " + r.status);
+  if (!r.ok) {
+    const msg = errText(j) || "HTTP " + r.status;
+    // Model rasm sozlamasini (imageConfig) tanimasa, shu sozlamasiz qayta uriniladi
+    if (r.status === 400 && withConfig && aspect && /image_?config|image_?size|aspect/i.test(msg)) {
+      return await runGemini(key, model, input, prompt, aspect, false);
+    }
+    throw new ProviderError(r.status, msg);
+  }
   const parts = j?.candidates?.[0]?.content?.parts || [];
   for (const p of parts) {
     const d = p.inlineData || p.inline_data;
@@ -228,11 +248,31 @@ async function runStability(key: string, input: Img): Promise<Img> {
   return { bytes: new Uint8Array(await r.arrayBuffer()), mime: r.headers.get("content-type") || "image/png" };
 }
 
-async function runProvider(k: any, input: Img, mode: string): Promise<Img> {
+// Model yo'q yoki o'chirilgan (404 / "not found" / "deprecated")
+function isModelGone(e: ProviderError): boolean {
+  return e.status === 404 || /not found|no longer available|shut ?down|deprecated/i.test(e.message);
+}
+
+async function runGeminiModels(k: any, input: Img, prompt: string, aspect: string): Promise<Img> {
+  const own = (k.model || "").trim();
+  const models = own ? [own] : [DEFAULT_MODEL.gemini].concat(GEMINI_FALLBACK);
+  let last: ProviderError | null = null;
+  for (const m of models) {
+    try {
+      return await runGemini(k.key_value, m, input, prompt, aspect);
+    } catch (e) {
+      if (e instanceof ProviderError && isModelGone(e) && !isAuthError(e)) { last = e; continue; }
+      throw e;
+    }
+  }
+  throw last as ProviderError;
+}
+
+async function runProvider(k: any, input: Img, mode: string, aspect: string): Promise<Img> {
   const model = (k.model || "").trim() || DEFAULT_MODEL[k.provider];
   const prompt = PROMPTS[mode] || PROMPTS.enhance;
   switch (k.provider) {
-    case "gemini": return await runGemini(k.key_value, model, input, prompt);
+    case "gemini": return await runGeminiModels(k, input, prompt, aspect);
     case "openai": return await runOpenAI(k.key_value, model, input, prompt);
     case "replicate": return await runReplicate(k.key_value, model, input, mode);
     case "stability": return await runStability(k.key_value, input);
@@ -267,6 +307,9 @@ function isAuthError(e: ProviderError): boolean {
 
 function userMessage(e: ProviderError): string {
   if (isAuthError(e)) return "AI kaliti yaroqsiz yoki ruxsati yo'q. Administratorga xabar bering.";
+  if (e.status === 429 && /limit:\s*0|free.?tier|billing/i.test(e.message)) {
+    return "AI kaliti bepul tarifda: rasm modellari uchun Google hisobida to'lov (billing) yoqilishi kerak.";
+  }
   if (e.status === 429) return "AI xizmatining limiti vaqtincha tugagan. Birozdan keyin urinib ko'ring.";
   if (e.status === 413) return "Rasm AI uchun juda katta.";
   if (e.status === 504 || e.name === "TimeoutError") return "AI xizmati kech javob berdi. Qayta urinib ko'ring.";
@@ -340,6 +383,7 @@ async function actEnhance(u: User, body: any) {
   const s = await getSettings();
   if (s.ai_enabled !== "on") throw new HttpError(503, "AI xizmati hozircha o'chirilgan.");
   const mode = MODES.indexOf(body.mode) >= 0 ? body.mode : "enhance";
+  const aspect = ASPECTS.indexOf(body.aspect) >= 0 ? body.aspect : "";
   const mime = ["image/jpeg", "image/png", "image/webp"].indexOf(body.mime) >= 0 ? body.mime : "";
   if (!mime) throw new HttpError(400, "Rasm formati qo'llab-quvvatlanmaydi.");
   const image = typeof body.image === "string" ? body.image : "";
@@ -370,7 +414,7 @@ async function actEnhance(u: User, body: any) {
   for (const k of keys) {
     const t0 = Date.now();
     try {
-      const out = await runProvider(k, input, mode);
+      const out = await runProvider(k, input, mode, aspect);
       const used = (await db.rpc("bump_usage", { p_user: u.id })).data as number;
       await db.from("api_keys").update({
         success_count: k.success_count + 1, consecutive_failures: 0, last_used_at: new Date().toISOString(),

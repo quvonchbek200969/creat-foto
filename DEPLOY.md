@@ -48,6 +48,8 @@ Jami ~20 daqiqa. Tartib muhim: **avval Supabase, keyin Netlify**.
    Shuning uchun sayt manzilini boshqalarga bermasdan oldin o'zingiz ro'yxatdan o'ting.
 2. Tepada **Boshqaruv → API kalitlar**:
    - Xizmatni tanlang (Gemini eng oson: aistudio.google.com/apikey dan kalit oling), kalitni qo'ying → **Qo'shish**.
+   - **Muhim:** Gemini rasm modellari (`gemini-nano-banana-2.1`) bepul tarifda ishlamaydi — kalit Google'da **to'lov (billing) yoqilgan** loyihadan bo'lishi kerak (rasm boshiga taxminan 3–5 sent). Aks holda AI «bepul tarif» xatosini beradi. Model topilmasa funksiya o'zi zaxira modelga (`gemini-2.5-flash-image`) o'tadi; kerak bo'lsa kalit qo'shishda «Model» maydoniga o'zingiz yozishingiz mumkin.
+   - Foydalanuvchi serverga bog'liq bo'lmay, o'z Gemini kalitini Studiyada («Tezkor» bo'limidagi Gemini kartasi) ham kiritishi mumkin — u faqat o'sha brauzerda saqlanadi.
    - **Sinash** tugmasi kalitni bepul so'rov bilan tekshiradi (rasm yubormaydi, pul sarflamaydi).
    - Bir nechta kalit qo'shsangiz, biri xato bersa keyingisi ishlatiladi; «Navbat» raqami kichik bo'lgani avval.
 3. **Boshqaruv → Sozlamalar**: kunlik AI limiti (har bir foydalanuvchiga), AI'ni o'chirib-yoqish, faqat bitta xizmatga majburlash.
