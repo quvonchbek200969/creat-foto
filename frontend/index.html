@@ -19,6 +19,38 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Nazoratchi: skript yuklanmasa yoki ilova ishga tushmasa, bo'sh qora ekran o'rniga tushuntirish chiqadi.
+      // Birinchi marta o'zi eski keshni tozalab qayta yuklaydi (eski versiya keshi — eng ko'p uchraydigan sabab).
+      (function () {
+        var errs = [];
+        window.addEventListener('error', function (e) {
+          errs.push((e && e.message) || (e && e.target && (e.target.src || e.target.href)) || 'skript xatosi');
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          errs.push(String((e && e.reason && e.reason.message) || (e && e.reason) || 'xato'));
+        });
+        function reset() {
+          var jobs = [];
+          try { if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) jobs.push(navigator.serviceWorker.getRegistrations().then(function (r) { return Promise.all(r.map(function (x) { return x.unregister(); })); })); } catch (e) {}
+          try { if (window.caches) jobs.push(caches.keys().then(function (k) { return Promise.all(k.map(function (n) { return caches.delete(n); })); })); } catch (e) {}
+          Promise.all(jobs).then(function () { location.reload(); }, function () { location.reload(); });
+        }
+        window.__tiniqReset = reset;
+        setTimeout(function () {
+          var root = document.getElementById('root');
+          if (!root || root.childElementCount > 0) return;
+          try { if (!sessionStorage.getItem('tiniq-autoreset')) { sessionStorage.setItem('tiniq-autoreset', '1'); reset(); return; } } catch (e) {}
+          root.innerHTML = '<div style="min-height:100vh;display:grid;place-items:center;padding:24px;font-family:system-ui,sans-serif;color:#e8ecf4">' +
+            '<div style="max-width:420px"><h1 style="font-size:20px;margin:0 0 8px">Sayt yuklanmadi</h1>' +
+            '<p style="color:#9aa4b8;font-size:14px;line-height:1.5;margin:0 0 12px">Internetni tekshiring va quyidagi tugmani bosing. Takrorlansa, pastdagi matnni yuboring.</p>' +
+            '<pre style="white-space:pre-wrap;word-break:break-word;font-size:12px;color:#7d879b;background:#10131a;border-radius:8px;padding:8px;margin:0 0 14px"></pre>' +
+            '<button style="background:#22d3ee;color:#05070a;border:0;border-radius:10px;padding:10px 16px;font-weight:600;cursor:pointer" onclick="window.__tiniqReset()">Keshni tozalab qayta yuklash</button></div></div>';
+          var pre = root.querySelector('pre');
+          if (pre) pre.textContent = errs.length ? errs.slice(0, 3).join('\n') : 'Xato matni yo\'q (skript yuklanmagan bo\'lishi mumkin).';
+        }, 7000);
+      })();
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

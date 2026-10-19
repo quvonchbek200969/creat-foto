@@ -1,6 +1,6 @@
 // Tiniq service worker: ilova qobig'ini keshlaydi (oflayn ochilish) va yangi versiyani tez yetkazadi.
 // Supabase/AI so'rovlari, POST va boshqa domenlarga tegmaydi. Versiyani oshirsangiz, eski keshlar o'chadi.
-const VERSION = 'tiniq-v1'
+const VERSION = 'tiniq-v2' // v2: eski brauzerlardagi buzilgan/eskirgan keshlar bir marta tozalansin
 const SHELL = ['/', '/favicon.svg', '/manifest.webmanifest', '/icons/icon-192.png']
 
 self.addEventListener('install', (e) => {
@@ -27,8 +27,11 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone()
-          caches.open(VERSION).then((c) => c.put('/', copy))
+          // Faqat muvaffaqiyatli javob keshlanadi (401 login-oynasi yoki 5xx xato sahifasi "qobiq" bo'lib qolmasin)
+          if (res.ok) {
+            const copy = res.clone()
+            caches.open(VERSION).then((c) => c.put('/', copy))
+          }
           return res
         })
         .catch(() => caches.match('/')),

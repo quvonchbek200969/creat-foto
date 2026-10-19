@@ -1,5 +1,7 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import { backendError } from '../lib/supabase.js'
+import { emailToLogin } from '../lib/login.js'
 import InstallApp from './InstallApp.jsx'
 
 export function Logo({ className = '' }) {
@@ -25,13 +27,18 @@ export default function Layout({ children }) {
           <nav className="ml-2 flex items-center gap-1" aria-label="Asosiy menyu">
             <NavLink to="/" end className={linkCls}>Studiya</NavLink>
             {isStaff && <NavLink to="/admin" className={linkCls}>Boshqaruv</NavLink>}
+            {hasBackend && user && <NavLink to="/account" className={linkCls}>Hisobim</NavLink>}
           </nav>
           <div className="ml-auto flex items-center gap-2">
             <InstallApp className="btn btn-sm !px-2.5 sm:!px-3" label="📲 Ilova" />
-            {!hasBackend && <span className="badge badge-warn hidden sm:inline-flex" title="Supabase ulanmagan">Oddiy rejim</span>}
+            {!hasBackend && (
+              <span className={`badge badge-warn ${backendError ? '' : 'hidden sm:inline-flex'}`} title={backendError || 'Supabase ulanmagan'}>
+                {backendError ? 'Server sozlamasi xato' : 'Oddiy rejim'}
+              </span>
+            )}
             {hasBackend && !loading && (user ? (
               <>
-                <span className="muted hidden max-w-[200px] truncate text-sm md:inline" title={user.email}>{profile?.display_name || user.email}</span>
+                <Link to="/account" className="muted hidden max-w-[200px] truncate text-sm underline-offset-2 hover:text-white hover:underline md:inline" title="Hisobim · parolni almashtirish">{profile?.display_name || emailToLogin(user.email)}</Link>
                 {profile && profile.role !== 'user' && <span className="badge badge-info hidden sm:inline-flex">{profile.role === 'superadmin' ? 'Super admin' : 'Admin'}</span>}
                 <button className="btn btn-ghost btn-sm" onClick={async () => { await signOut(); nav('/') }}>Chiqish</button>
               </>

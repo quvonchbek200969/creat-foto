@@ -1,12 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { supabase, hasBackend } from '../lib/supabase.js'
+import { loginToEmail } from '../lib/login.js'
 
 const Ctx = createContext(null)
 export const useAuth = () => useContext(Ctx)
 
 function authMessage(err) {
   const m = (err?.message || '').toLowerCase()
-  if (m.includes('invalid login')) return 'Email yoki parol noto‘g‘ri.'
+  if (m.includes('invalid login')) return 'Login (email) yoki parol noto‘g‘ri.'
+  if (m.includes('different from the old') || m.includes('same as the old')) return 'Yangi parol eskisidan farq qilishi kerak.'
+  if (m.includes('reauthentication') || m.includes('session') && m.includes('required')) return 'Xavfsizlik uchun chiqib, qayta kiring va parolni almashtiring.'
   if (m.includes('already registered') || m.includes('already been registered')) return 'Bu email bilan hisob allaqachon ochilgan. Kirishni sinang.'
   if (m.includes('password should be')) return 'Parol kamida 6 belgidan iborat bo‘lsin.'
   if (m.includes('email not confirmed')) return 'Email tasdiqlanmagan. Pochtangizdagi xatni oching.'
@@ -34,8 +37,7 @@ export function AuthProvider({ children }) {
       if (!alive) return
       setSession(data.session)
       await loadProfile(data.session?.user?.id)
-      if (alive) setLoading(false)
-    })
+    }).catch(() => { /* sessiya o'qilmadi — mehmon sifatida davom etamiz */ }).finally(() => { if (alive) setLoading(false) })
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       setSession(s)
       // onAuthStateChange ichida to'g'ridan-to'g'ri so'rov yubormaslik uchun keyinga qoldiriladi
@@ -44,8 +46,14 @@ export function AuthProvider({ children }) {
     return () => { alive = false; sub.subscription.unsubscribe() }
   }, [loadProfile])
 
-  const signIn = useCallback(async (email, password) => {
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+  // login — email yoki oddiy login (masalan, Quvonchbek); login ichki emailga o'giriladi (lib/login.js)
+  const signIn = useCallback(async (login, password) => {
+    const { error } = await supabase.auth.signInWithPassword({ email: loginToEmail(login), password })
+    if (error) throw new Error(authMessage(error))
+  }, [])
+
+  const changePassword = useCallback(async (password) => {
+    const { error } = await supabase.auth.updateUser({ password })
     if (error) throw new Error(authMessage(error))
   }, [])
 
@@ -81,9 +89,10 @@ export function AuthProvider({ children }) {
       signIn,
       signUp,
       signOut,
+      changePassword,
       refreshProfile: () => loadProfile(session?.user?.id),
     }
-  }, [loading, session, profile, signIn, signUp, signOut, loadProfile])
+  }, [loading, session, profile, signIn, signUp, signOut, changePassword, loadProfile])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

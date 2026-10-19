@@ -45,6 +45,10 @@ Jami ~20 daqiqa. Tartib muhim: **avval Supabase, keyin Netlify**.
 
 ## 4) Birinchi kirish — super admin
 
+**Variant A — login bilan (Quvonchbek).** Loyiha papkasidagi `SUPER_ADMIN_GITHUBGA_YUKLAMANG.sql` faylini Supabase → SQL Editor'da ishga tushiring (bu fayl parolni o'z ichiga oladi, shuning uchun **GitHub'ga yuklanmaydi**). Keyin saytda **Kirish** → Login va parol shu fayldagi qiymatlar. Kirgach darhol **Hisobim → Parolni almashtirish** orqali parolni o'zgartiring. Login maydoniga email ham, oddiy login ham yozish mumkin.
+
+**Variant B — email bilan.**
+
 1. Saytni oching → **Ro'yxatdan o'tish**. **Birinchi ro'yxatdan o'tgan hisob avtomatik Super admin bo'ladi.**
    Shuning uchun sayt manzilini boshqalarga bermasdan oldin o'zingiz ro'yxatdan o'ting.
 2. Tepada **Boshqaruv → API kalitlar**:
@@ -113,4 +117,7 @@ Edge Function'ni soxta Supabase bilan sinash (Deno kerak): `deno run -A --import
 | «Kalit yaroqsiz» | Kalit noto'g'ri yoki o'chirilgan; **Sinash** bilan tekshiring |
 | Ro'yxatdan o'tgach «Emailni tasdiqlang» | Supabase'da **Confirm email** yoqilgan |
 | Netlify build xatosi | Avval GitHub'dagi fayllar to'liqligini tekshiring (yuklash chala bo'lgan bo'lishi mumkin) |
+| Sayt butunlay qora, hech narsa ko'rinmaydi | 7 soniyadan keyin sayt o'zi eski keshni tozalab qayta yuklaydi; takrorlansa «Keshni tozalab qayta yuklash» tugmasi chiqadi. Sabab ko'pincha eski brauzer keshi yoki Netlify'dagi `VITE_SUPABASE_URL` noto'g'ri yozilgani (`https://xxxx.supabase.co` ko'rinishida bo'lishi shart) — bunda tepada «Server sozlamasi xato» belgisi chiqadi |
+| Boshqa qurilmada sayt Netlify login oynasiga o'tadi / `401` | Netlify'da **Visitor access** himoyasi yoqilgan — o'chiring (3-bo'lim, 5-band) |
+| Login yoki parol noto'g'ri | Parolni unutgan bo'lsangiz, `SUPER_ADMIN_GITHUBGA_YUKLAMANG.sql` ni qayta ishga tushiring (parolni tiklaydi) |
 | Sayt «Oddiy rejim» belgisi bilan | `VITE_SUPABASE_*` o'zgaruvchilari kiritilmagan; kiritgach saytni qayta joylang |

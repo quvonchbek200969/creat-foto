@@ -59,8 +59,8 @@ export function Login() {
     <Shell title="Kirish" subtitle="Hisobingizga kiring." footer={<>Hisobingiz yo‘qmi? <Link className="text-[var(--cyan)] underline" to="/register">Ro‘yxatdan o‘ting</Link></>}>
       <form onSubmit={submit} className="space-y-4">
         <div>
-          <label className="label" htmlFor="email">Email</label>
-          <input id="email" className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          <label className="label" htmlFor="email">Login yoki email</label>
+          <input id="email" className="input" type="text" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} />
         </div>
         <div>
           <label className="label" htmlFor="pw">Parol</label>

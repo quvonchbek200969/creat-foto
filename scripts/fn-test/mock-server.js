@@ -79,6 +79,18 @@ Deno.serve({ port: PORT, onListen: () => console.log(`Soxta Supabase: http://loc
       if (!u) return out({ error: 'invalid_grant', error_description: 'Invalid login credentials', msg: 'Invalid login credentials' }, 400)
       return out(session(u))
     }
+    if (url.pathname === '/auth/v1/user' && req.method === 'PUT') { // parolni almashtirish (updateUser)
+      const tok = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
+      const u = users.find((x) => 'tok-' + x.id === tok)
+      if (!u) return out({ code: 401, msg: 'invalid JWT' }, 401)
+      const b = await req.json()
+      if (b.password) {
+        if (b.password.length < 6) return out({ code: 422, msg: 'Password should be at least 6 characters.' }, 422)
+        if (b.password === u.password) return out({ code: 422, msg: 'New password should be different from the old password.' }, 422)
+        u.password = b.password
+      }
+      return out({ id: u.id, aud: 'authenticated', role: 'authenticated', email: u.email, user_metadata: { display_name: u.name } })
+    }
     if (url.pathname === '/auth/v1/logout') return new Response(null, { status: 204, headers: cors })
     if (url.pathname === '/rest/v1/profiles' && req.method === 'GET') {
       const id = (url.searchParams.get('id') || '').replace(/^eq\./, '')

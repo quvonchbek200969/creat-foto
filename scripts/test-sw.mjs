@@ -1,4 +1,4 @@
-// sw.js mantig'ini Node'da soxta muhit bilan sinash. Ishga tushirish:  node scripts/test-sw.mjs
+﻿// sw.js mantig'ini Node'da soxta muhit bilan sinash. Ishga tushirish:  node scripts/test-sw.mjs
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { dirname, join } from 'node:path'
@@ -64,16 +64,16 @@ const R = (method, path, mode = 'cors', origin = 'https://app.test') => ({ metho
   const e = makeEnv()
   for (const p of ['/', '/favicon.svg', '/manifest.webmanifest', '/icons/icon-192.png']) e.net.routes[p] = html(p)
   await e.fire('install')
-  const keys = [...(e.store.get('tiniq-v1')?.keys() || [])].map((u) => new URL(u).pathname)
+  const keys = [...(e.store.get('tiniq-v2')?.keys() || [])].map((u) => new URL(u).pathname)
   ok(keys.length === 4 && keys.includes('/') && keys.includes('/icons/icon-192.png'), 'install: qobiq fayllari keshlandi', keys.join(' '))
 }
 
 // 2) activate: eski keshlar o'chadi, yangisi qoladi
 {
   const e = makeEnv()
-  await e.caches.open('tiniq-v0'); await e.caches.open('boshqa'); await e.caches.open('tiniq-v1')
+  await e.caches.open('tiniq-v1'); await e.caches.open('boshqa'); await e.caches.open('tiniq-v2')
   await e.fire('activate')
-  ok(JSON.stringify([...e.store.keys()]) === '["tiniq-v1"]' && e.claimed.n === 1, 'activate: eski keshlar o\'chdi, clients.claim chaqirildi', [...e.store.keys()].join())
+  ok(JSON.stringify([...e.store.keys()]) === '["tiniq-v2"]' && e.claimed.n === 1, 'activate: eski keshlar o\'chdi, clients.claim chaqirildi', [...e.store.keys()].join())
 }
 
 // 3) Tegmasligi kerak bo'lgan so'rovlar
@@ -102,6 +102,21 @@ const R = (method, path, mode = 'cors', origin = 'https://app.test') => ({ metho
   ok(off.responded && (await off.res.text()) === '<html>v2</html>', 'oflayn: oxirgi keshdagi qobiq ochiladi')
 }
 
+// 4b) Xato javob (401 — Netlify login oynasi, 5xx) "qobiq" bo'lib keshlanmasligi kerak
+{
+  const e = makeEnv()
+  e.net.routes['/'] = html('<html>ok</html>')
+  await e.doFetch(R('GET', '/', 'navigate'))
+  await new Promise((r) => setTimeout(r, 10))
+  e.net.routes['/'] = () => new Response('login oynasi', { status: 401 })
+  const bad = await e.doFetch(R('GET', '/', 'navigate'))
+  ok(bad.res.status === 401, '401 javob foydalanuvchiga o\'zgarishsiz beriladi')
+  await new Promise((r) => setTimeout(r, 10))
+  e.net.online = false
+  const off = await e.doFetch(R('GET', '/', 'navigate'))
+  ok((await off.res.text()) === '<html>ok</html>', 'oflayn: 401 sahifa emas, oxirgi muvaffaqiyatli qobiq ochiladi')
+}
+
 // 5) /assets/*: kesh birinchi, HTML javob keshlanmaydi
 {
   const e = makeEnv()
@@ -114,7 +129,7 @@ const R = (method, path, mode = 'cors', origin = 'https://app.test') => ({ metho
   e.net.routes['/assets/missing.js'] = html('SPA fallback')
   const m = await e.doFetch(R('GET', '/assets/missing.js'))
   await m.res.text(); await new Promise((r) => setTimeout(r, 10))
-  const cached = [...(e.store.get('tiniq-v1')?.keys() || [])].some((u) => u.endsWith('missing.js'))
+  const cached = [...(e.store.get('tiniq-v2')?.keys() || [])].some((u) => u.endsWith('missing.js'))
   ok(!cached, '/assets/ ostida HTML javob (yo\'q fayl) keshlanmaydi')
   e.net.online = false
   ok((await (await e.doFetch(R('GET', '/assets/app-abc.js'))).res.text()) === 'A', 'oflayn: /assets/ keshdan ishlaydi')
